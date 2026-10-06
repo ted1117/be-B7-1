@@ -10,11 +10,16 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     steps:
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.OCI_HOST }}" && echo "OCI_HOST OK" || echo "OCI_HOST EMPTY"
+          test -n "${{ secrets.OCI_SSH_KEY }}" && echo "OCI_SSH_KEY OK" || echo "OCI_SSH_KEY EMPTY"
+
       - name: Deploy to OCI
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.OCI_HOST }}
-          username: ubuntu
+          username: ${{ secrets.OCI_USER }}
           key: ${{ secrets.OCI_SSH_KEY }}
           script: |
             cd /home/ubuntu/be-B7-1
