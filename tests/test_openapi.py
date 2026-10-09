@@ -10,7 +10,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.dependencies import get_ai_client, get_chat_service
+from app.api.dependencies import get_ai_client, get_chat_service, get_current_user_id
 from app.api.error_responses import error_response
 from app.api.v1.endpoints.chat import router
 from app.core.errors import APIError, configure_request_processing, internal_error
@@ -34,6 +34,7 @@ def docs_client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
     configure_request_processing(app)
+    app.dependency_overrides[get_current_user_id] = lambda: 1
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
@@ -56,8 +57,13 @@ def test_errors_use_common_schema_and_named_examples(docs_client: TestClient) ->
                 for code, example in media["examples"].items():
                     payload = ErrorResponse.model_validate(example["value"])
                     assert payload.error.code == code
-                    assert code != "UNAUTHORIZED"
-    for path, method in [("/api/v1/chats", "post"), (CHAT_PATH, "get")]:
+                    if code == "UNAUTHORIZED":
+                        assert status == "401"
+    for path, method in [
+        ("/api/v1/chats", "post"),
+        (CHAT_PATH, "get"),
+        (CHAT_PATH, "delete"),
+    ]:
         examples = schema["paths"][path][method]["responses"]["500"]["content"][
             "application/json"
         ]["examples"]
@@ -65,11 +71,28 @@ def test_errors_use_common_schema_and_named_examples(docs_client: TestClient) ->
     assert docs_client.get("/docs").status_code == 200
 
 
+def test_delete_documents_no_body_and_expected_errors(docs_client: TestClient) -> None:
+    """삭제 API는 요청·성공 본문 없이 인증과 예상 오류를 문서화한다."""
+    operation = docs_client.get("/openapi.json").json()["paths"][CHAT_PATH]["delete"]
+    assert "requestBody" not in operation
+    assert set(operation["responses"]) == {"204", "401", "404", "422", "500"}
+    assert "content" not in operation["responses"]["204"]
+    assert operation["security"] == [{"HTTPBearer": []}]
+    parameter = operation["parameters"][0]
+    assert parameter["name"] == "chat_id"
+    assert parameter["in"] == "path"
+    assert parameter["schema"]["format"] == "uuid"
+
+
 @pytest.mark.parametrize(
     ("path", "method", "url", "code", "status"),
     [
         (CHAT_PATH, "get", f"/api/v1/chats/{CHAT_ID}", "CHAT_NOT_FOUND", 404),
         (CHAT_PATH, "get", "/api/v1/chats/invalid", "INVALID_INPUT", 422),
+        (CHAT_PATH, "delete", f"/api/v1/chats/{CHAT_ID}", "CHAT_NOT_FOUND", 404),
+        (CHAT_PATH, "delete", "/api/v1/chats/invalid", "INVALID_INPUT", 422),
+        (CHAT_PATH, "delete", f"/api/v1/chats/{CHAT_ID}", "DB_ERROR", 500),
+        (CHAT_PATH, "delete", f"/api/v1/chats/{CHAT_ID}", "INTERNAL_ERROR", 500),
         ("/api/v1/chats", "post", "/api/v1/chats", "DB_ERROR", 500),
         ("/api/v1/chats", "post", "/api/v1/chats", "INTERNAL_ERROR", 500),
         (MESSAGE_PATH, "post", MESSAGE_URL, "AI_UNAVAILABLE", 502),
@@ -84,6 +107,7 @@ def test_examples_match_real_services_and_handlers(
     """서비스·핸들러의 상태·코드·문구가 Swagger 예시와 일치한다."""
     repository = AsyncMock()
     repository.get_by_id_and_user.return_value = None
+    repository.soft_delete.return_value = False
     repository.list_recent_completed.return_value = []
     service = ChatService(repository)
     docs_client.app.dependency_overrides[get_chat_service] = lambda: service
@@ -91,10 +115,11 @@ def test_examples_match_real_services_and_handlers(
     ai.model = "test-only"
     docs_client.app.dependency_overrides[get_ai_client] = lambda: ai
     body = {"question": "질문"}
+    saving = repository.soft_delete if method == "delete" else repository.create
     if code == "DB_ERROR":
-        repository.create.side_effect = OperationalError("test", {}, RuntimeError())
+        saving.side_effect = OperationalError("test", {}, RuntimeError())
     elif code == "INTERNAL_ERROR":
-        repository.create.side_effect = RuntimeError("private test error")
+        saving.side_effect = RuntimeError("private test error")
     elif code.startswith("AI_"):
         repository.get_by_id_and_user.return_value = Chat(user_id=1)
         ai.generate_answer.side_effect = APIError(cast(ErrorCode, code))

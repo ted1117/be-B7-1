@@ -21,6 +21,14 @@ class Settings(BaseSettings):
         "https://b7-1-two.vercel.app",
     ]
 
+    @field_validator("openai_api_key", "openai_model")
+    @classmethod
+    def _validate_ai_setting(cls, value: str) -> str:
+        """AI 필수 설정이 비어 있는지 검증한다."""
+        if not value.strip():
+            raise ValueError("AI 필수 설정은 비어 있을 수 없습니다.")
+        return value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:
@@ -39,9 +47,26 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # pyright: ignore[reportCallIssue]
+
+
+# 로그인 API 구현
+class AuthSettings(BaseSettings):
+    jwt_secret_key: str = Field(min_length=32)
+    access_token_expire_minutes: int = Field(default=30, ge=1, le=1440)
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+
+# 로그인 API 구현
+@lru_cache
+def get_auth_settings() -> AuthSettings:
+    return AuthSettings()
