@@ -11,11 +11,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
+from app.api.error_responses import error_response
 from app.api.v1.admin_deps import get_admin_service, require_admin
 from app.core.datetimes import UtcDateTime
+from app.core.errors import APIError, AppError
 from app.core.pagination import Page, make_page
 from app.schemas.admin import (
     ChatLogItem,
+    RoleUpdateRequest,
+    RoleUpdateResponse,
     SessionDetail,
     SessionItem,
     SystemLogItem,
@@ -25,7 +29,15 @@ from app.schemas.admin import (
 from app.services.admin_service import AdminService
 
 router = APIRouter(
-    prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)]
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin)],
+    responses={
+        401: error_response(APIError("UNAUTHORIZED")),
+        403: error_response(
+            AppError("FORBIDDEN", "접근 권한이 없습니다.", status_code=403)
+        ),
+    },
 )
 
 
@@ -45,6 +57,16 @@ async def get_user(
     service: Annotated[AdminService, Depends(get_admin_service)],
 ):
     return await service.get_user(user_id)
+
+
+@router.patch("/users/{user_id}/role", response_model=RoleUpdateResponse)
+async def update_user_role(
+    user_id: int,
+    body: RoleUpdateRequest,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    admin: Annotated[dict, Depends(require_admin)],
+):
+    return await service.update_role(user_id, body.role, admin.get("user_id"))
 
 
 @router.get("/logs", response_model=Page[ChatLogItem])
