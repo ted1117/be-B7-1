@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DatabaseSaveError
 from app.models.chat import Chat, ChatLog
+from app.models.user import User
 
 
 class ChatRepository:
@@ -14,7 +15,7 @@ class ChatRepository:
         self.session = session
 
     async def create(self, user_id: int) -> tuple[Chat, bool]:
-        """빈 채팅방을 재사용하거나 새로 생성한다."""
+        """사용자의 빈 채팅방을 재사용하거나 새로 생성한다."""
         has_messages = exists().where(ChatLog.chat_id == Chat.chat_id)
         empty_chat_query = (
             select(Chat)
@@ -35,6 +36,9 @@ class ChatRepository:
             .returning(Chat)
         )
         try:
+            await self.session.scalar(
+                select(User.id).where(User.id == user_id).with_for_update()
+            )
             chat = await self.session.scalar(stmt)
             created = chat is not None
             if chat is None:
