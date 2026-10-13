@@ -29,12 +29,13 @@ from app.api.dependencies import get_ai_client, get_current_user_id
 from app.api.v1.router import api_router, health_router
 from app.clients.ai import AIClient
 from app.core.chat_request_limiter import ChatRequestLimiter
-from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
+from app.core.database import Base, get_db
 from app.core.errors import APIError, DatabaseSaveError, configure_request_processing
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.error import ErrorCode
+from conftest import _enable_sqlite_foreign_keys
 
 
 @dataclass
@@ -484,20 +485,23 @@ def test_create_failure_rolls_back_session(chat_api: _ChatAPI) -> None:
     assert chats[0].user_id == chat_api.user_id
 
 
-def test_fresh_startup_registers_models_and_enforces_foreign_keys(tmp_path: Path) -> None:
-    """새 프로세스의 앱 DB 시작 처리가 모델 등록과 외래키 설정을 수행한다."""
+def test_fresh_startup_registers_models_and_foreign_key_constraints(
+    tmp_path: Path,
+) -> None:
+    """새 프로세스의 앱 DB 시작 처리가 모델과 외래키 제약을 등록한다."""
     script = """
 import asyncio
 import sys
 from unittest.mock import patch
 
 import sqlalchemy.ext.asyncio as sa_async
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
 
 sys.path.insert(0, REPO_PATH)
 from app.core.config import Settings
 settings = Settings(
     _env_file=None,
+    database_url="sqlite+aiosqlite://",
     openai_api_key="test-only",
     jwt_secret_key="test-only-startup-secret-at-least-32-characters",
 )
@@ -516,7 +520,6 @@ async def verify_startup():
                 lambda sync_connection: inspect(sync_connection).get_table_names()
             )
             assert set(tables) == {"users", "chats", "chat_logs", "revoked_tokens"}
-            assert await connection.scalar(text("PRAGMA foreign_keys")) == 1
             keys = await connection.run_sync(
                 lambda sync_connection: inspect(sync_connection).get_foreign_keys(
                     "chats"

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.api.dependencies import get_ai_client
 from app.core.config import Settings
-from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
+from app.core.database import Base, get_db
 from app.core.errors import APIError
 from app.core.security import create_access_token
 from app.main import app, lifespan
@@ -24,6 +24,7 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import MessageResponse
+from conftest import _enable_sqlite_foreign_keys
 
 
 @dataclass

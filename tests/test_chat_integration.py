@@ -18,7 +18,7 @@ from app.api.dependencies import get_current_user_id
 from app.clients.ai import DEFAULT_INSTRUCTIONS
 from app.clients.openai import COMPACT_THRESHOLD
 from app.core.config import Settings
-from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
+from app.core.database import Base, get_db
 from app.core.errors import APIError
 from app.core.logging import EventLogFormatter
 from app.main import app, lifespan
@@ -26,6 +26,7 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.schemas.chat import MessageResponse
 from app.schemas.error import ErrorCode
+from conftest import _enable_sqlite_foreign_keys
 
 
 def _sdk_response(status: str, answer: str) -> dict[str, object]:

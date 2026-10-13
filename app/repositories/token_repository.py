@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 
 from sqlalchemy import delete
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.revoked_token import RevokedToken

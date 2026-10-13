@@ -12,11 +12,12 @@ from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.database import Base, _enable_sqlite_foreign_keys
+from app.core.database import Base
 from app.core.errors import DatabaseSaveError
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
+from conftest import _enable_sqlite_foreign_keys
 
 
 @pytest.fixture
