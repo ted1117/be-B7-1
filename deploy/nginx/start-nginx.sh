@@ -22,6 +22,10 @@ envsubst '${DOMAIN}' < /config/http.conf.template > /etc/nginx/conf.d/http.conf
 current_checksum="$(certificate_checksum)"
 if [ -n "$current_checksum" ]; then
     render_https
+    if ! nginx -t; then
+        rm -f /etc/nginx/conf.d/https.conf
+        current_checksum=""
+    fi
 fi
 nginx -t
 
@@ -30,9 +34,15 @@ nginx -t
     while sleep 60; do
         new_checksum="$(certificate_checksum)"
         if [ -n "$new_checksum" ] && [ "$new_checksum" != "$current_checksum" ]; then
-            render_https
+            new_https_config=false
+            if [ ! -f /etc/nginx/conf.d/https.conf ]; then
+                render_https
+                new_https_config=true
+            fi
             if nginx -t && nginx -s reload; then
                 current_checksum="$new_checksum"
+            elif [ "$new_https_config" = true ]; then
+                rm -f /etc/nginx/conf.d/https.conf
             fi
         fi
     done
