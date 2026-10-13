@@ -1,7 +1,7 @@
 """초기 관리자 시드 스크립트.
 
-서버 안에서 1회 실행한다. 같은 DB(/data 마운트)를 직접 열므로
-환경변수·볼륨 설정이 앱과 같아야 한다.
+서버 안에서 1회 실행한다. 앱과 같은 DATABASE_URL의 PostgreSQL에 연결하므로
+연결 설정이 앱과 같아야 한다.
 
     SEED_ADMIN_PASSWORD='초기비번' python scripts/seed_admin.py --username admin
 

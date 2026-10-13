@@ -1,6 +1,6 @@
 # Progress: PostgreSQL 전환
 
-Last updated: 2026-10-14 01:53
+Last updated: 2026-10-14 02:17
 
 ## Goal
 
@@ -8,32 +8,32 @@ Last updated: 2026-10-14 01:53
 
 ## Current Status
 
-- Status: In progress
-- Current focus: 4단계 완료 — Compose PostgreSQL 서비스 및 연결·볼륨·시작 순서 구성
+- Status: Ready for review
+- Current focus: 5단계 완료 — PostgreSQL 전체 테스트 전환, SQLite 의존성 제거 및 운영 문서 갱신
 - Branch: refactor/postgresql
 - Related issue/PR: 없음
 
 ## Decisions
 
-- [2026-10-14] 사용자 지시에 따라 PRD 없이 단계별로 진행하며, 기존 데이터 이관 및 마이그레이션 도구 도입은 제외한다. 기존 Settings를 유지하고 DATABASE_URL을 필수로 받는다. SQLite 외래키 초기화는 기존 테스트에서만 사용하고 운영 코드에서는 제거한다. 채팅방 생성은 사용자 행의 FOR UPDATE 잠금과 생성·재사용을 같은 트랜잭션에서 처리하며, PostgreSQL 기본 READ COMMITTED 격리를 전제로 한다. 현재 Compose 구성에 PostgreSQL 16을 추가하고 DB 전용 볼륨을 사용하며, 백엔드는 DB healthcheck 통과 후 시작한다. DATABASE_URL 및 POSTGRES_PASSWORD는 배포 환경에서 제공한다.
+- [2026-10-14] 사용자 지시에 따라 PRD 없이 단계별로 진행하며, 기존 데이터 이관 및 마이그레이션 도구 도입은 제외한다. 기존 Settings를 유지하고 DATABASE_URL을 필수로 받는다. SQLite 전용 초기화와 시각 분기 및 aiosqlite를 제거하고 DB 테스트는 모두 PostgreSQL로 실행한다. 채팅방 생성은 사용자 행의 FOR UPDATE 잠금과 생성·재사용을 같은 트랜잭션에서 처리하며, PostgreSQL 기본 READ COMMITTED 격리를 전제로 한다. 현재 Compose 구성에 PostgreSQL 16을 추가하고 DB 전용 볼륨을 사용하며, 백엔드는 DB healthcheck 통과 후 시작한다. DATABASE_URL 및 POSTGRES_PASSWORD는 배포 환경에서 제공한다. 기존 큰 회원 ID 동작을 유지하도록 회원·채팅방 소유자 ID를 BIGINT로 정의하며, 각 DB 테스트는 독립 임시 DB를 생성·정리하고 .env를 읽지 않는다. 없는 PRD에 의존하던 응답 예제는 테스트 데이터로 분리한다.
 
 ## Completed
 
-- [x] 1단계: asyncpg 추가 및 DATABASE_URL 필수화. 2단계: 운영 PRAGMA 제거, PostgreSQL insert 적용, tests/conftest.py로 공통 테스트 설정 및 SQLite 초기화 함수 이동, 임시 PostgreSQL 16에서 테이블·외래키·토큰 폐기 검증 및 관련 기존 테스트 171개 통과. 3단계: 사용자 행 잠금 추가, PostgreSQL에서 12개 독립 연결의 빈 방 생성·재사용, 사용자별 잠금 분리 및 실패 후 잠금 해제 검증, 관련 테스트 187개 통과. 4단계: Compose PostgreSQL 서비스·전용 볼륨·시작 순서 적용, 별도 테스트 프로젝트에서 이미지 빌드·빈 DB 테이블 생성·health 및 인증·채팅 기본 동작 검증, 컨테이너 재생성 후 데이터 보존 확인
+- [x] 1단계: asyncpg 추가 및 DATABASE_URL 필수화. 2단계: 운영 PRAGMA 제거, PostgreSQL insert 적용, tests/conftest.py로 공통 테스트 설정 및 SQLite 초기화 함수 이동, 임시 PostgreSQL 16에서 테이블·외래키·토큰 폐기 검증 및 관련 기존 테스트 171개 통과. 3단계: 사용자 행 잠금 추가, PostgreSQL에서 12개 독립 연결의 빈 방 생성·재사용, 사용자별 잠금 분리 및 실패 후 잠금 해제 검증, 관련 테스트 187개 통과. 4단계: Compose PostgreSQL 서비스·전용 볼륨·시작 순서 적용, 별도 테스트 프로젝트에서 이미지 빌드·빈 DB 테이블 생성·health 및 인증·채팅 기본 동작 검증, 컨테이너 재생성 후 데이터 보존 확인. 5단계: 모든 DB 테스트 PostgreSQL 전환, 큰 정수 ID·외래키·시각 및 테스트 준비 순서 대응, aiosqlite와 SQLite 분기 제거, 테스트 응답 예제 분리, 공개 설정 예제·연결·배포·관리자·DB 조회 문서 갱신, 전체 테스트 485개 및 Ruff·잠금 파일 검사 통과, 최종 이미지 기동·관리자 시드·읽기 전용 SQL 확인
 
 ## In Progress
 
-- [ ] PostgreSQL 전환 전체 작업 진행 중 — 5단계 미착수
+- [ ] 구현 작업 없음 — 변경 사항 검토 및 커밋 대기
 
 ## Next Steps
 
-1. 나머지 DB 테스트를 PostgreSQL로 전환한다.
-2. PostgreSQL 기준 전체 API 및 동시성 검증을 완료하고 SQLite 의존성을 제거한다.
-3. PostgreSQL 연결·배포·초기 관리자 생성·DB 조회 등 운영 문서를 갱신한다.
+1. 5단계 변경 사항을 검토하고 커밋한다.
+2. 실제 배포 환경의 PostgreSQL 비밀번호와 DATABASE_URL을 설정한다.
+3. 운영 배포 후 health·초기 관리자·인증·질문·데이터 보존을 확인한다.
 
 ## Changed Files
 
-- `app/core/config.py`, `pyproject.toml`, `uv.lock`: 1단계 연결 설정 및 드라이버 준비. `app/core/database.py`, `app/repositories/token_repository.py`: 2단계 PostgreSQL 대응. `tests/conftest.py`(루트에서 이동), `tests/test_chat_api.py`, `tests/test_chat_integration.py`, `tests/test_chat_conversation_integration.py`, `tests/test_chat_delete_integration.py`: 기존 SQLite 테스트 초기화 분리 및 시작 처리 검증 조정. `app/repositories/chat_repository.py`, `tests/test_chat_repository.py`: 3단계 사용자 행 잠금 및 격리한 PostgreSQL 회귀 테스트 추가. `compose.yaml`: 4단계 PostgreSQL 서비스·연결 설정·전용 볼륨·healthcheck 및 시작 순서 추가. `docs/PROGRESS.md`: 진행 상태 기록
+- `app/core/config.py`: 1단계 연결 설정. `app/core/database.py`, `app/repositories/token_repository.py`: 2단계 PostgreSQL 대응. `app/repositories/chat_repository.py`: 3단계 사용자 행 잠금. `compose.yaml`: 4단계 PostgreSQL 배포 구성. `app/models/user.py`, `app/models/chat.py`, `app/core/datetimes.py`: 5단계 큰 정수 ID 보존과 UTC 저장 분기 정리. `pyproject.toml`, `uv.lock`: asyncpg 추가 및 aiosqlite 제거. `tests/conftest.py`, `tests/test_admin_api.py`, `tests/test_auth_api.py`, `tests/test_chat_api.py`, `tests/test_chat_models.py`, `tests/test_chat_repository.py`, `tests/test_chat_integration.py`, `tests/test_chat_conversation_integration.py`, `tests/test_chat_delete_integration.py`, `tests/test_login_api.py`, `tests/test_request_processing.py`: PostgreSQL 테스트 전환. `tests/test_chat_schemas.py`, `tests/data/chat-response-examples.json`: PRD 없는 응답 예제 검증. `.env.example`, `README.md`, `docs/ARCHITECTURE.md`, `docs/DATABASE.md`, `docs/GETTING_STARTED.md`, `docs/OPERATIONS.md`, `scripts/seed_admin.py`: PostgreSQL 설정·운영 안내. `docs/PROGRESS.md`: 진행 상태 기록
 
 ## Commands Run
 
@@ -68,16 +68,32 @@ docker compose exec -T backend python - recreated < smoke.py
 회원·채팅방·폐기 토큰 데이터 보존 및 /health·로그인·채팅방 재사용 확인
 docker compose down --volumes --rmi local (별도 테스트 프로젝트만)
 테스트 컨테이너·전용 볼륨·네트워크·빌드 이미지 정리 완료
+UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv remove --offline aiosqlite
+aiosqlite 제거 및 uv.lock 갱신 완료
+TEST_POSTGRESQL_URL=<임시 PostgreSQL Unix 소켓 주소> uv run --no-sync pytest -q --tb=short
+5단계 전체 485개 통과, 실패·제외·건너뛰기 없음; 각 테스트의 독립 임시 DB 생성·정리 완료
+Ruff check 및 format --check (이번 변경 Python 파일 16개)
+모두 통과
+UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv lock --check --offline
+잠금 파일 검증 통과
+docker compose up --build --wait --wait-timeout 90 backend (별도 테스트 프로젝트 및 임시 설정)
+최종 코드·의존성 이미지 빌드, PostgreSQL·백엔드 healthy 및 health·인증·채팅·로그아웃 검증 통과
+docker compose exec -T backend python scripts/seed_admin.py --username stage5_admin --name 관리자 (테스트 전용 비밀번호 환경변수 제공)
+관리자 생성 및 재실행 시 중복 생성 없이 종료 확인
+docs/DATABASE.md의 읽기 전용 PostgreSQL 조회 명령 4개 실행
+모두 통과
+임시 PostgreSQL의 test_b7_ DB 개수 확인 및 테스트 Compose down --volumes --rmi local, pg_ctl stop
+남은 테스트 DB 0개, 테스트 컨테이너·전용 볼륨·네트워크·이미지 정리 및 임시 서버 종료 완료
 git diff --check
 통과
 ```
 
 ## Test Status
 
-- Last passing: 별도 Compose 프로젝트의 이미지 빌드·PostgreSQL 및 백엔드 기동·테이블 생성·health 및 인증·채팅 기본 동작·재생성 후 데이터 보존 검증 통과; 3단계 관련 테스트 187개 통과, SQLite 실행 1개 제외
+- Last passing: 전체 테스트 485개, 변경 Python 파일 Ruff 검사·포맷 및 uv.lock 검증 통과; 최종 이미지 기동·health·인증·채팅·로그아웃·관리자 시드·읽기 전용 SQL 검증 통과
 - Failing: 실행한 검증에서 실패 없음
-- Not run: 전체 pytest, PostgreSQL 전체 API 테스트 및 실제 운영 배포
+- Not run: 실제 운영 배포 및 외부 OpenAI 실제 호출 검증; 테스트의 AI 응답은 모의 HTTP·클라이언트 사용
 
 ## Risks / Open Questions
 
-- 나머지 SQLite 테스트 및 기존 운영 문서는 5단계에서 변경해야 한다. PostgreSQL Repository 테스트는 TEST_POSTGRESQL_URL이 없으면 제외된다. 배포 시 DATABASE_URL과 POSTGRES_PASSWORD를 제공하고 URL의 사용자·DB·비밀번호를 PostgreSQL 설정과 일치시켜야 한다. 기본 사용자·DB는 b7, Compose 내부 DB 호스트는 postgres이며 READ COMMITTED 격리를 유지해야 한다. 원본 .env는 읽거나 수정하지 않았으며 실제 운영 배포는 수행하지 않았다.
+- 배포 시 DATABASE_URL과 POSTGRES_PASSWORD를 제공하고 URL의 사용자·DB·비밀번호를 PostgreSQL 설정과 일치시켜야 한다. 기본 사용자·DB는 b7, Compose 내부 DB 호스트는 postgres이며 READ COMMITTED 격리를 유지해야 한다. 테스트에는 임시 DB 생성·삭제 권한이 있는 TEST_POSTGRESQL_URL이 필요하고 미설정 시 DB 테스트는 명시적으로 실패한다. 원본 .env는 읽거나 수정하지 않았으며 실제 운영 배포는 수행하지 않았다. 기존 SQLite 데이터 이관은 제외했고 실제 OpenAI 호출·운영 부하·비용은 이번 검증 범위에 포함하지 않는다.

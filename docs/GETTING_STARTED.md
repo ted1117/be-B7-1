@@ -71,11 +71,20 @@ cp .env.example .env
 openssl rand -hex 32
 ```
 
-`.env`에 `OPENAI_API_KEY`, 사용할 `OPENAI_MODEL`, 생성한 `JWT_SECRET_KEY`, 로컬 DB 주소 `DATABASE_URL=sqlite+aiosqlite:///./app.db`를 설정합니다. 실제 비밀값은 Git에 올리지 않습니다. 전체 환경 변수와 비밀값 없는 예시는 [환경 변수](OPERATIONS.md#환경-변수)를 참고합니다.
+`.env`에 `OPENAI_API_KEY`, 사용할 `OPENAI_MODEL`, 생성한 `JWT_SECRET_KEY`, 로컬 PostgreSQL 주소 `DATABASE_URL=postgresql+asyncpg://b7:<URL 인코딩한 비밀번호>@127.0.0.1:5432/b7`를 설정합니다. 실제 비밀값은 Git에 올리지 않습니다. 전체 환경 변수와 비밀값 없는 예시는 [환경 변수](OPERATIONS.md#환경-변수)를 참고합니다.
+
+먼저 PostgreSQL 16을 설치·실행하거나 개발용 컨테이너를 실행합니다. 아래 `POSTGRES_PASSWORD`는 셸 환경변수에 설정하며 `DATABASE_URL`의 비밀번호와 같아야 합니다.
 
 ```bash
+export POSTGRES_PASSWORD='직접 정한 개발용 비밀번호'
+docker run -d --name b7-postgres-dev \
+  -e POSTGRES_USER=b7 -e POSTGRES_DB=b7 -e POSTGRES_PASSWORD \
+  -p 127.0.0.1:5432:5432 \
+  -v b7_postgres_dev:/var/lib/postgresql/data postgres:16-alpine
 uv run fastapi dev app/main.py
 ```
+
+이미 만든 개발 DB 컨테이너는 `docker start b7-postgres-dev`로 다시 시작합니다. 루트 `.env.example`은 Compose 내부 주소 `postgres:5432`를 사용하므로 로컬 Python 실행에서는 호스트를 `127.0.0.1:5432`로 바꿉니다.
 
 | 확인 | 주소 / 방법 |
 | --- | --- |
@@ -84,7 +93,7 @@ uv run fastapi dev app/main.py
 | API 문서 읽기 (ReDoc) | http://127.0.0.1:8000/redoc → 요청·응답 구조 확인 |
 | 서버 종료 | 터미널에서 `Ctrl+C` |
 
-`/docs`·`/redoc`은 같은 `/openapi.json`을 보여줍니다. 기본 SQLite DB는 저장소 루트의 `app.db`이며 별도 설치가 필요 없습니다.
+`/docs`·`/redoc`은 같은 `/openapi.json`을 보여줍니다. PostgreSQL 연결 주소는 필수이며, 앱 시작 시 빈 DB에 테이블을 생성합니다. 기존 데이터 이관은 수행하지 않습니다.
 
 가입·로그인 → Authorize → 채팅방 생성·질문의 실행 순서는 [사용자 API 확인](DATABASE.md#사용자-api로-확인), 테스트·권한·실패 점검은 [운영 검증](OPERATIONS.md#운영-검증)을 따릅니다. 운영 API는 [배포 Swagger](https://be-b7-1-development.up.railway.app/docs)에서 확인합니다.
 
