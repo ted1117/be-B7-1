@@ -1,0 +1,20 @@
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    server_tokens off;
+
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 308 https://${DOMAIN}$request_uri;
+    }
+}
