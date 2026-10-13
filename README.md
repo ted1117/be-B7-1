@@ -9,10 +9,10 @@
 | 영역 | 기술 |
 | --- | --- |
 | 언어와 API | Python 3.12+, FastAPI, Pydantic |
-| DB | SQLite, SQLAlchemy 비동기 세션, aiosqlite |
+| DB | PostgreSQL, SQLAlchemy 비동기 세션, asyncpg |
 | 인증 | JWT HS256, Argon2 비밀번호 해싱 |
 | AI | OpenAI Responses API |
-| 배포와 로그 | Railway, JSONL 이벤트 로그 |
+| 배포와 로그 | Docker Compose·Railway, JSONL 이벤트 로그 |
 | 개발과 검사 | uv, pytest, Ruff |
 
 ## 시스템 구조
@@ -21,7 +21,7 @@
 flowchart LR
     Web[React 프론트엔드] --> API[FastAPI 인증과 접근 제어]
     API --> Service[서비스]
-    Service --> DB[(SQLite)]
+    Service --> DB[(PostgreSQL)]
     Service --> AI[OpenAI 클라이언트]
     AI --> OpenAI[Responses API]
     API --> Logs[JSONL 로그]
@@ -48,7 +48,7 @@ flowchart LR
 | [아키텍처](docs/ARCHITECTURE.md) | 계층, 인증·접근 제어, 처리 흐름, 대화 문맥 |
 | [데이터베이스](docs/DATABASE.md) | ERD, 저장 방식, 평가자 DB 확인 절차 |
 | [API 명세 (Swagger)](https://be-b7-1-development.up.railway.app/docs) | 코드에서 생성한 요청·응답·입력 규칙 확인과 실행 |
-| [운영과 배포](docs/OPERATIONS.md) | 환경 변수, Railway, 로그, AI 오류 대응 |
+| [운영과 배포](docs/OPERATIONS.md) | 환경 변수, PostgreSQL·Compose·Railway, 로그, AI 오류 대응 |
 | [개발 환경](docs/GETTING_STARTED.md) | 설치, 로컬 실행, VS Code 설정, 패키지 관리 |
 | [시스템 프롬프트](docs/SYSTEM_PROMPT.md) | 한글 검토용 번역과 설명, 영어 도입용 원문 |
 | [팀 작업](docs/TEAM.md) | 팀원 역할, 업무 분담과 협업 방식 |

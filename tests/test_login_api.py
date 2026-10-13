@@ -52,9 +52,7 @@ def test_member_events_distinguish_outcomes(signup_db, monkeypatch):
     signup = client.post("/api/v1/auth/signup", json=PAYLOAD)
     assert signup.status_code == 201
     user_id = str(signup.json()["id"])
-    assert events == [
-        ("user_signed_up", {"user_id": user_id, "result": "success"})
-    ]
+    assert events == [("user_signed_up", {"user_id": user_id, "result": "success"})]
     assert client.post("/api/v1/auth/signup", json=PAYLOAD).status_code == 409
     assert len(events) == 1
 
@@ -79,9 +77,7 @@ def test_member_events_distinguish_outcomes(signup_db, monkeypatch):
         json={"username": PAYLOAD["username"], "password": PAYLOAD["password"]},
     )
     assert response.status_code == 200
-    assert events[-1] == (
-        "user_logged_in", {"user_id": user_id, "result": "success"}
-    )
+    assert events[-1] == ("user_logged_in", {"user_id": user_id, "result": "success"})
     assert len(events) == 4
 
 
@@ -222,7 +218,7 @@ def test_invalid_auth_configuration_prevents_startup(
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     env["OPENAI_API_KEY"] = "test-only"
     env["OPENAI_MODEL"] = "test-model"
-    env["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'startup.db'}"
+    env["DATABASE_URL"] = os.environ["DATABASE_URL"]
     result = subprocess.run(
         [sys.executable, "-c", "import app.main"],
         cwd=tmp_path,
@@ -235,7 +231,6 @@ def test_invalid_auth_configuration_prevents_startup(
     assert result.returncode != 0
     assert "ValidationError" in result.stderr
     assert field in result.stderr
-    assert not (tmp_path / "startup.db").exists()
 
 
 @pytest.mark.parametrize(

@@ -233,13 +233,6 @@ pyrightconfig.json
 /app.db-shm
 /app.db-wal
 
-# AI
-AGENTS.md
-docs/PROGRESS.md
-
-# Local development planning documents
-/docs/PRD/
-
 # Runtime system logs
 /logs/
 

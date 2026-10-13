@@ -1,18 +1,17 @@
-"""임시 SQLite에서 논리 삭제의 소유권·조회·기록 보존·롤백을 검증한다."""
+"""독립 PostgreSQL에서 채팅방 저장·동시성·롤백을 검증한다."""
 
 import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.core.database import Base, _enable_sqlite_foreign_keys
+from app.core.database import Base
 from app.core.errors import DatabaseSaveError
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
@@ -20,17 +19,18 @@ from app.repositories.chat_repository import ChatRepository
 
 
 @pytest.fixture
-def repository_sessions(tmp_path: Path) -> Iterator[async_sessionmaker[AsyncSession]]:
-    """외래키를 검사하는 테스트 전용 SQLite와 요청별 세션을 제공한다.
+def repository_sessions(
+    postgresql_engine: AsyncEngine,
+) -> Iterator[async_sessionmaker[AsyncSession]]:
+    """두 사용자를 저장한 독립 PostgreSQL 세션 팩토리를 제공한다.
 
     Args:
-        tmp_path: 테스트 DB를 저장할 임시 경로.
+        postgresql_engine: 이번 테스트의 PostgreSQL 엔진.
 
     Yields:
-        기존 User 모델의 두 사용자가 저장된 세션 팩토리.
+        요청마다 새 세션을 생성하는 팩토리.
     """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repository.db'}")
-    event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def prepare() -> None:
@@ -49,10 +49,7 @@ def repository_sessions(tmp_path: Path) -> Iterator[async_sessionmaker[AsyncSess
             await session.commit()
 
     asyncio.run(prepare())
-    try:
-        yield sessions
-    finally:
-        asyncio.run(engine.dispose())
+    yield sessions
 
 
 def test_soft_delete_filters_user_queries_and_keeps_other_chats(
@@ -225,7 +222,7 @@ def test_concurrent_creates_return_one_empty_chat(
         if existing:
             async with repository_sessions() as session:
                 await ChatRepository(session).create(1)
-        start = asyncio.Event()
+        start = asyncio.Barrier(12)
 
         async def create() -> tuple[Chat, bool]:
             async with repository_sessions() as session:
@@ -234,9 +231,8 @@ def test_concurrent_creates_return_one_empty_chat(
                 await start.wait()
                 return await ChatRepository(session).create(1)
 
-        tasks = [asyncio.create_task(create()) for _ in range(12)]
-        start.set()
-        results = await asyncio.gather(*tasks)
+        async with asyncio.timeout(15):
+            results = await asyncio.gather(*(create() for _ in range(12)))
         assert len({chat.chat_id for chat, _ in results}) == 1
         assert sum(created for _, created in results) == (0 if existing else 1)
         async with repository_sessions() as session:
@@ -301,9 +297,62 @@ def test_create_commit_failure_rolls_back_and_session_remains_usable(
                 assert caught.value.__cause__ is failure
             assert not session.in_transaction()
             assert len(await repository.list_by_user(1)) == int(existing)
+            async with repository_sessions() as other_session:
+                async with asyncio.timeout(5):
+                    recovered, created = await ChatRepository(other_session).create(1)
+                assert created is not existing
             _, created = await repository.create(1)
-            assert created is not existing
+            assert not created
             assert not session.in_transaction()
-            assert len(await repository.list_by_user(1)) == 1
+            assert [chat.chat_id for chat in await repository.list_by_user(1)] == [
+                recovered.chat_id
+            ]
+
+    asyncio.run(run())
+
+
+def test_user_lock_waits_only_for_same_user(
+    repository_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """같은 사용자의 생성만 기다리고 다른 사용자는 잠금 해제 전에 완료한다."""
+
+    async def run() -> None:
+        async with repository_sessions() as holder:
+            await holder.scalar(select(User.id).where(User.id == 1).with_for_update())
+            ready = asyncio.Event()
+            blocked_pid = None
+
+            async def create_same_user() -> tuple[Chat, bool]:
+                nonlocal blocked_pid
+                async with repository_sessions() as session:
+                    blocked_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    ready.set()
+                    return await ChatRepository(session).create(1)
+
+            blocked = asyncio.create_task(create_same_user())
+            try:
+                async with asyncio.timeout(5):
+                    await ready.wait()
+                    async with repository_sessions() as observer:
+                        while True:
+                            waiting = await observer.scalar(
+                                text(
+                                    "SELECT wait_event_type FROM pg_stat_activity "
+                                    "WHERE pid = :pid"
+                                ),
+                                {"pid": blocked_pid},
+                            )
+                            if waiting == "Lock":
+                                break
+                            await observer.rollback()
+                            await asyncio.sleep(0.01)
+                    async with repository_sessions() as other:
+                        chat, created = await ChatRepository(other).create(2)
+                        assert created and chat.user_id == 2
+                    assert not blocked.done()
+            finally:
+                await holder.rollback()
+                chat, created = await asyncio.wait_for(blocked, timeout=5)
+            assert created and chat.user_id == 1
 
     asyncio.run(run())

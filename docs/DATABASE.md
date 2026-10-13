@@ -1,6 +1,6 @@
 # 데이터베이스
 
-SQLite(`sqlite+aiosqlite`)를 사용하며 `DATABASE_URL`로 파일 위치를 지정합니다. 초기화의 `PRAGMA foreign_keys=ON`은 SQLite 전용이므로 다른 DB로 전환하려면 드라이버와 초기화 코드를 변경해야 합니다.
+PostgreSQL(`postgresql+asyncpg`)을 사용하며 `DATABASE_URL`로 연결 대상을 지정합니다. Compose는 PostgreSQL 16 서비스와 전용 `postgres_data` 볼륨을 사용합니다. 빈 DB에는 앱 시작 시 테이블을 생성하며 기존 SQLite 데이터 이관은 수행하지 않습니다.
 
 ## ERD
 
@@ -50,7 +50,7 @@ erDiagram
 | `chat_logs` | 질문·답변과 처리 결과. `request_id` 최초 질문 요청 ID, `model` 호출 모델, `created_at` 질문 저장 시각, `finished_at` 종료 시각. 상태별 null 조건은 아래 표 참고 |
 | `revoked_tokens` | 폐기한 토큰의 SHA-256 해시(64자)와 만료 시각(`expires_at`). 회원 외래키 없음 |
 
-채팅 시각과 API 반환 시각은 UTC입니다. 조회 인덱스는 `chats(user_id, created_at, chat_id)`와 `chat_logs(chat_id, created_at, request_id)`입니다.
+회원 ID와 채팅방 소유자 ID는 64비트 정수(`BIGINT`), 채팅방·요청 ID는 UUID입니다. 시각은 시간대가 있는 PostgreSQL 컬럼에 저장하며 채팅 시각과 API 반환 시각은 UTC입니다. 빈 방 생성·재사용은 사용자 행 잠금과 같은 트랜잭션에서 처리하고 기본 `READ COMMITTED` 격리를 사용합니다. 조회 인덱스는 `chats(user_id, created_at, chat_id)`와 `chat_logs(chat_id, created_at, request_id)`입니다.
 
 ## 대화 로그 저장
 
@@ -95,32 +95,32 @@ curl "http://127.0.0.1:8000/api/v1/chats/$CHAT_ID" -H "Authorization: Bearer $TO
 
 ### 읽기 전용 SQL로 확인
 
-Railway CLI에서 `railway ssh`로 배포 컨테이너에 접속한 뒤 실행합니다. 각 명령은 `/data/app.db`를 읽기 전용으로 열고 최근 50건을 출력하며, DB 파일이 없으면 오류를 반환합니다. `railway run`은 로컬에서 실행되므로 운영 볼륨 확인에 사용하지 않습니다.
+Compose에서는 PostgreSQL 컨테이너의 `psql`로 조회합니다. 각 명령은 읽기 전용 트랜잭션에서 최근 50건을 출력합니다. 기본 사용자·DB 이름은 `b7`이며 변경했으면 아래 명령도 맞춥니다. 외부 PostgreSQL은 제공된 연결 설정으로 `psql`에 접속합니다. SQLAlchemy의 `postgresql+asyncpg` 주소는 `psql`에 그대로 전달하지 않습니다.
 
 #### 회원 (`users`)
 
 ```bash
-python -c "import sqlite3; con=sqlite3.connect('file:/data/app.db?mode=ro', uri=True); con.row_factory=sqlite3.Row; [print(dict(r)) for r in con.execute('SELECT id, username, name, role, created_at, last_login_at FROM users ORDER BY created_at DESC, id DESC LIMIT 50')]; con.close()"
+docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT id, username, name, role, created_at, last_login_at FROM users ORDER BY created_at DESC, id DESC LIMIT 50; COMMIT;"
 ```
 
 #### 채팅방 (`chats`)
 
 ```bash
-python -c "import sqlite3; con=sqlite3.connect('file:/data/app.db?mode=ro', uri=True); con.row_factory=sqlite3.Row; [print(dict(r)) for r in con.execute('SELECT chat_id, user_id, created_at, deleted_at, conversation_id FROM chats ORDER BY created_at DESC, chat_id DESC LIMIT 50')]; con.close()"
+docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT chat_id, user_id, created_at, deleted_at, conversation_id FROM chats ORDER BY created_at DESC, chat_id DESC LIMIT 50; COMMIT;"
 ```
 
 #### 대화 기록 (`chat_logs`)
 
 ```bash
-python -c "import sqlite3; con=sqlite3.connect('file:/data/app.db?mode=ro', uri=True); con.row_factory=sqlite3.Row; [print(dict(r)) for r in con.execute('SELECT c.user_id, l.chat_id, l.request_id, l.question, l.answer, l.status, l.created_at FROM chat_logs AS l JOIN chats AS c ON c.chat_id = l.chat_id ORDER BY l.created_at DESC, l.request_id DESC LIMIT 50')]; con.close()"
+docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT c.user_id, l.chat_id, l.request_id, l.question, l.answer, l.status, l.created_at FROM chat_logs AS l JOIN chats AS c ON c.chat_id = l.chat_id ORDER BY l.created_at DESC, l.request_id DESC LIMIT 50; COMMIT;"
 ```
 
 #### 폐기 토큰 (`revoked_tokens`)
 
 ```bash
-python -c "import sqlite3; con=sqlite3.connect('file:/data/app.db?mode=ro', uri=True); con.row_factory=sqlite3.Row; [print(dict(r)) for r in con.execute('SELECT token_hash, expires_at FROM revoked_tokens ORDER BY expires_at DESC, token_hash DESC LIMIT 50')]; con.close()"
+docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT token_hash, expires_at FROM revoked_tokens ORDER BY expires_at DESC, token_hash DESC LIMIT 50; COMMIT;"
 ```
 
-로컬 DB를 확인하려면 각 명령의 `file:/data/app.db?mode=ro`를 `file:app.db?mode=ro`로 바꿉니다. SQL은 전체 회원과 논리 삭제된 방도 조회합니다. 대화 기록에서 특정 회원만 보려면 `ORDER BY` 앞에 `WHERE c.user_id = 원하는 정수`를 추가합니다. SQLite UUID는 하이픈 없이 저장됩니다. 외부 증빙에는 점검용 계정의 기록만 사용합니다.
+SQL은 전체 회원과 논리 삭제된 방도 조회합니다. 대화 기록에서 특정 회원만 보려면 `ORDER BY` 앞에 `WHERE c.user_id = 원하는 정수`를 추가합니다. UUID는 하이픈을 포함한 표준 형식으로 조회됩니다. 외부 증빙에는 점검용 계정의 기록만 사용합니다.
 
 `create_all`은 기존 테이블을 변경하지 않습니다. 모델 변경에는 별도 마이그레이션·백업이 필요합니다. [백업·보관 안내](OPERATIONS.md#데이터와-비밀값-관리) 참고.

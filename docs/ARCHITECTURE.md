@@ -1,6 +1,6 @@
 # 아키텍처
 
-React 프론트는 FastAPI를 통해 인증·채팅 기능을 사용합니다. FastAPI는 SQLite에 회원·대화를 저장하고 OpenAI API로 답변을 생성합니다.
+React 프론트는 FastAPI를 통해 인증·채팅 기능을 사용합니다. FastAPI는 PostgreSQL에 회원·대화를 저장하고 OpenAI API로 답변을 생성합니다.
 
 ## 계층과 수명주기
 
@@ -27,6 +27,8 @@ React 프론트는 FastAPI를 통해 인증·채팅 기능을 사용합니다. F
 
 채팅은 인증한 회원 ID와 `chats.user_id`가 일치하는 미삭제 방만 사용합니다. 본문의 사용자 ID로 소유자를 정하지 않으며, 타인 소유·삭제·없는 방은 모두 `404 CHAT_NOT_FOUND`입니다.
 
+빈 채팅방 생성은 같은 트랜잭션에서 사용자 행을 `FOR UPDATE`로 잠근 뒤 생성·재사용합니다. PostgreSQL의 기본 `READ COMMITTED` 격리에서 같은 사용자의 생성 요청을 순서대로 처리하고, 새 방은 201·재사용은 200을 반환합니다. 다른 사용자는 별도로 처리합니다.
+
 ## 질문 처리 흐름
 
 ```mermaid
@@ -34,7 +36,7 @@ sequenceDiagram
     participant U as 사용자
     participant API as API·인증
     participant S as ChatService
-    participant DB as SQLite
+    participant DB as PostgreSQL
     participant AI as AIClient
     U->>API: POST /chats/{chat_id}/messages
     API->>API: 인증·입력 검증
@@ -68,11 +70,11 @@ sequenceDiagram
 
 ### OpenAI Conversation
 
-첫 질문에서 OpenAI Conversation을 생성하고 ID를 `chats.conversation_id`에 저장합니다. 이후 같은 방의 질문에는 저장된 ID와 현재 질문만 전달하며, OpenAI가 대화 문맥을 이어갑니다. SQLite에는 질문과 답변 원문을 계속 저장합니다.
+첫 질문에서 OpenAI Conversation을 생성하고 ID를 `chats.conversation_id`에 저장합니다. 이후 같은 방의 질문에는 저장된 ID와 현재 질문만 전달하며, OpenAI가 대화 문맥을 이어갑니다. PostgreSQL에는 질문과 답변 원문을 계속 저장합니다.
 
 - Conversation 문맥이 20,000 임계값에 도달하면 OpenAI의 compaction으로 자동 압축합니다. 스트리밍은 사용하지 않습니다.
 - 사용자당 질문 하나만 처리하고, 전체 동시 질문은 기본 3개로 제한합니다. 추가 요청은 `CHAT_BUSY` 또는 `SERVER_BUSY`로 즉시 거절합니다.
-- 현재 질문은 앞뒤 공백 제거 후 1~1,000자로 제한합니다. SQLite 기록과 OpenAI Conversation 상태는 별도로 관리하며 자동 재동기화하지 않습니다.
+- 현재 질문은 앞뒤 공백 제거 후 1~1,000자로 제한합니다. PostgreSQL 기록과 OpenAI Conversation 상태는 별도로 관리하며 자동 재동기화하지 않습니다.
 - Conversation ID는 클라이언트 응답에 노출하지 않습니다. OpenAI 장애와 재시도 정책은 [운영 문서](OPERATIONS.md#ai-재시도와-타임아웃)를 따릅니다.
 
 ### 최근 완료 대화 5건

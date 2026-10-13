@@ -2,10 +2,10 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     Index,
-    Integer,
     String,
     Text,
     Uuid,
@@ -29,7 +29,7 @@ class Chat(Base):
         Uuid(as_uuid=True), primary_key=True, default=uuid4
     )
     user_id: Mapped[int] = mapped_column(
-        Integer(), ForeignKey("users.id"), nullable=False
+        BigInteger(), ForeignKey("users.id"), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTimeType(), nullable=False, default=func.now()
