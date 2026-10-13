@@ -11,8 +11,9 @@ import httpx2
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 from openai import AsyncOpenAI
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.api.dependencies import get_current_user_id
 from app.clients.ai import DEFAULT_INSTRUCTIONS
@@ -26,7 +27,6 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.schemas.chat import MessageResponse
 from app.schemas.error import ErrorCode
-from conftest import _enable_sqlite_foreign_keys
 
 
 def _sdk_response(status: str, answer: str) -> dict[str, object]:
@@ -103,6 +103,7 @@ def _message(response: Response) -> dict[str, object]:
     ],
 )
 def test_app_sdk_and_database_integration(
+    postgresql_url: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -114,7 +115,7 @@ def test_app_sdk_and_database_integration(
     """SDK의 응답·예외가 API 응답·DB 기록·문맥·로그에 연결되는지 확인한다.
 
     Args:
-        tmp_path: 운영 DB와 분리한 임시 SQLite 파일 경로.
+        tmp_path: 운영 DB와 분리한 임시 테스트 파일 경로.
         monkeypatch: 테스트용 인증·설정·SDK 전송과 DB 의존성을 연결할 도구.
         caplog: 원문 노출과 요청 식별자를 확인할 로그 수집 도구.
         scenario: 모의 HTTP 응답 또는 네트워크 오류의 종류.
@@ -174,13 +175,12 @@ def test_app_sdk_and_database_integration(
     conversation_requests: list[httpx2.Request] = []
     sdk_connections: list[httpx2.AsyncClient] = []
     request_sessions: list[AsyncSession] = []
-    database_url = f"sqlite+aiosqlite:///{tmp_path / 'chat.db'}"
+    database_url = postgresql_url
     expected_messages: list[dict[str, object]] = []
     pending_ids: list[UUID] = []
 
     async def run() -> None:
-        engine = create_async_engine(database_url)
-        event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+        engine = create_async_engine(database_url, poolclass=NullPool)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def create_tables() -> None:
@@ -201,18 +201,25 @@ def test_app_sdk_and_database_integration(
             if request.url.path == "/v1/conversations":
                 conversation_requests.append(request)
                 assert not request_sessions[-1].in_transaction()
-                return httpx2.Response(200, json={
-                    "id": "conv_integration", "object": "conversation",
-                    "created_at": 1, "metadata": {},
-                })
+                return httpx2.Response(
+                    200,
+                    json={
+                        "id": "conv_integration",
+                        "object": "conversation",
+                        "created_at": 1,
+                        "metadata": {},
+                    },
+                )
             sdk_requests.append(request)
             payload = json.loads(request.content)
             assert not request_sessions[-1].in_transaction()
             async with sessions() as session:
                 pending_rows = list(
-                    (await session.scalars(
-                        select(ChatLog).where(ChatLog.status == "pending")
-                    )).all()
+                    (
+                        await session.scalars(
+                            select(ChatLog).where(ChatLog.status == "pending")
+                        )
+                    ).all()
                 )
                 assert len(pending_rows) == 1
                 pending = pending_rows[0]
@@ -228,7 +235,8 @@ def test_app_sdk_and_database_integration(
                 raise httpx2.ReadTimeout("hidden SDK timeout", request=request)
             if scenario == "retry_call_deadline" and len(sdk_requests) == 1:
                 return httpx2.Response(
-                    429, headers={"Retry-After": "0.001"},
+                    429,
+                    headers={"Retry-After": "0.001"},
                     json={"error": {"message": "hidden SDK error"}},
                 )
             if scenario in {"deadline", "retry_call_deadline"}:
@@ -372,6 +380,7 @@ def test_app_sdk_and_database_integration(
                     )
                     assert other_owner.status_code == 404
                     assert other_owner.json()["error"]["code"] == "CHAT_NOT_FOUND"
+
                     def reject_auth() -> int:
                         """인증 실패를 재현한다."""
                         raise APIError("UNAUTHORIZED")
@@ -388,7 +397,7 @@ def test_app_sdk_and_database_integration(
         assert len(sdk_connections) == 1
         assert sdk_connections[0].is_closed
 
-        reopened = create_async_engine(database_url)
+        reopened = create_async_engine(database_url, poolclass=NullPool)
         try:
             reopened_sessions = async_sessionmaker(reopened)
             async with reopened_sessions() as session:
@@ -418,7 +427,7 @@ def test_app_sdk_and_database_integration(
     elif scenario in {"retry_wait_deadline", "retry_call_deadline"}:
         expected_delays = [0.001]
     else:
-        expected_delays = [1.0, 2.0, 4.0, 8.0][:first_attempts - 1]
+        expected_delays = [1.0, 2.0, 4.0, 8.0][: first_attempts - 1]
     assert [call.args[0] for call in sleep.await_args_list] == expected_delays
     assert all(connection.is_closed for connection in sdk_connections)
     for request in sdk_requests:
@@ -444,7 +453,5 @@ def test_app_sdk_and_database_integration(
             3 if message is expected_messages[0] else 2
         )
         assert events.count("ai_call_started") == 1
-        outcome = (
-            "ai_call_succeeded" if expected_code is None else "ai_call_failed"
-        )
+        outcome = "ai_call_succeeded" if expected_code is None else "ai_call_failed"
         assert events.count(outcome) == 1

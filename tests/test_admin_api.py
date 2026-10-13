@@ -1,6 +1,6 @@
 """관리자 조회 API 테스트.
 
-회원·대화·세션은 실제 DB에서 읽는다(격리 SQLite). 시스템 로그만 실제 파일을
+회원·대화·세션은 실제 DB에서 읽는다(격리 PostgreSQL). 시스템 로그만 실제 파일을
 읽으므로 파일→API 전 구간까지 확인한다.
 """
 
@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.v1.admin_deps import require_admin
 from app.core.database import Base, get_db
@@ -40,9 +40,9 @@ def _clear_settings_cache(monkeypatch):
 
 
 @pytest.fixture
-def admin_db(tmp_path):
+def admin_db(postgresql_engine, tmp_path):
     """격리 DB에 회원 2명·세션 1개·기록 2건을 심는다."""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'admin.db'}")
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def initialize():
@@ -73,7 +73,9 @@ def admin_db(tmp_path):
                     last_login_at=None,
                 )
             )
+            await session.flush()
             session.add(Chat(chat_id=chat_id, user_id=1, created_at=now))
+            await session.flush()
             session.add(
                 ChatLog(
                     request_id=uuid4(),
@@ -299,11 +301,11 @@ def sample_log_file(tmp_path):
 
 
 @pytest.fixture
-def file_client(sample_log_file, tmp_path, monkeypatch):
+def file_client(postgresql_engine, sample_log_file, tmp_path, monkeypatch):
     # 빈 DB + 임시 시스템 로그 파일로 실제 의존성 체인을 그대로 쓴다.
     from app.core.config import get_settings
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'file.db'}")
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def initialize():
@@ -354,15 +356,18 @@ def test_system_logs_sorted_newest_first(file_client):
 @pytest.mark.parametrize("status_code", [201, None])
 def test_system_logs_prefer_status_code(file_client, sample_log_file, status_code):
     """두 상태 키가 있으면 새 키를 우선하며 원본 파일을 유지한다."""
-    content = json.dumps(
-        {
-            "timestamp": "2026-09-30T08:00:00Z",
-            "level": "INFO",
-            "event": "request_completed",
-            "status_code": status_code,
-            "http_status": 500,
-        }
-    ) + "\n"
+    content = (
+        json.dumps(
+            {
+                "timestamp": "2026-09-30T08:00:00Z",
+                "level": "INFO",
+                "event": "request_completed",
+                "status_code": status_code,
+                "http_status": 500,
+            }
+        )
+        + "\n"
+    )
     sample_log_file.write_text(content, encoding="utf-8")
     response = file_client.get("/api/v1/admin/system-logs")
     assert response.status_code == 200

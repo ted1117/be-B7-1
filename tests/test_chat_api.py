@@ -1,4 +1,4 @@
-"""격리한 SQLite에서 채팅 API의 저장·조회·소유권을 검증한다."""
+"""격리한 PostgreSQL에서 채팅 API의 저장·조회·소유권을 검증한다."""
 
 import asyncio
 import logging
@@ -15,15 +15,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import event, select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
 
 from app.api.dependencies import get_ai_client, get_current_user_id
 from app.api.v1.router import api_router, health_router
@@ -35,7 +33,6 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.error import ErrorCode
-from conftest import _enable_sqlite_foreign_keys
 
 
 @dataclass
@@ -73,14 +70,15 @@ class _ChatAPI:
 
 
 @pytest.fixture
-def chat_api() -> Iterator[_ChatAPI]:
+def chat_api(
+    postgresql_engine,
+) -> Iterator[_ChatAPI]:
     """운영 DB·인증·설정을 사용하지 않는 테스트 앱과 저장소를 제공한다.
 
     Yields:
         요청마다 새 세션을 사용하는 채팅 API 테스트 환경.
     """
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
-    event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def create_tables() -> None:
@@ -108,6 +106,13 @@ def chat_api() -> Iterator[_ChatAPI]:
                         name="다른 회원",
                     ),
                 ]
+            )
+            await session.flush()
+            await session.execute(
+                text(
+                    "SELECT setval(pg_get_serial_sequence('users', 'id'), "
+                    "(SELECT max(id) FROM users))"
+                )
             )
             await session.commit()
 
@@ -419,7 +424,7 @@ def test_sql_failure_returns_database_error(
     assert failure.getMessage() == expected_event
     assert failure.levelname == "ERROR"
     assert failure.error_code == "DB_ERROR"
-    assert failure.exception_type == "OperationalError"
+    assert failure.exception_type == "ProgrammingError"
     assert failure.request_id == response.headers["X-Request-ID"]
     assert failure.method == method
     assert failure.path == path
@@ -486,6 +491,7 @@ def test_create_failure_rolls_back_session(chat_api: _ChatAPI) -> None:
 
 
 def test_fresh_startup_registers_models_and_foreign_key_constraints(
+    postgresql_url: str,
     tmp_path: Path,
 ) -> None:
     """새 프로세스의 앱 DB 시작 처리가 모델과 외래키 제약을 등록한다."""
@@ -501,11 +507,11 @@ sys.path.insert(0, REPO_PATH)
 from app.core.config import Settings
 settings = Settings(
     _env_file=None,
-    database_url="sqlite+aiosqlite://",
+    database_url=TEST_DATABASE_URL,
     openai_api_key="test-only",
     jwt_secret_key="test-only-startup-secret-at-least-32-characters",
 )
-test_engine = sa_async.create_async_engine("sqlite+aiosqlite://")
+test_engine = sa_async.create_async_engine(settings.database_url)
 with patch("app.core.config.get_settings", return_value=settings):
     with patch.object(sa_async, "create_async_engine", return_value=test_engine):
         from app.core.database import Base, engine
@@ -531,6 +537,7 @@ async def verify_startup():
 
 asyncio.run(verify_startup())
 """
+    script = script.replace("TEST_DATABASE_URL", repr(postgresql_url))
     script = script.replace("REPO_PATH", repr(str(Path(__file__).resolve().parents[1])))
     result = subprocess.run(
         [sys.executable, "-c", script],

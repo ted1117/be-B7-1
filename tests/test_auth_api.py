@@ -5,7 +5,7 @@ from threading import Barrier
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.database import Base, get_db
 from app.core.security import password_hash
@@ -17,8 +17,8 @@ PAYLOAD = {"username": "Test_User", "password": "Password1!", "name": " 홍길�
 
 
 @pytest.fixture
-def signup_db(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'signup.db'}")
+def signup_db(postgresql_engine, tmp_path):
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def initialize():

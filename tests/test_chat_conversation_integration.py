@@ -13,9 +13,10 @@ import httpx2
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 from openai import AsyncOpenAI
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.clients.ai import DEFAULT_INSTRUCTIONS
 from app.core.config import Settings
@@ -26,7 +27,6 @@ from app.main import app, lifespan
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
-from conftest import _enable_sqlite_foreign_keys
 
 
 @dataclass
@@ -59,14 +59,13 @@ def _sdk_response(answer: str, status: str = "completed") -> dict[str, object]:
 
 @asynccontextmanager
 async def _conversation_app(
-    tmp_path: Path,
+    database_url: str,
     monkeypatch: pytest.MonkeyPatch,
-    respond: Callable[
-        [httpx2.Request], Awaitable[httpx2.Response | None]
-    ] | None = None,
+    respond: Callable[[httpx2.Request], Awaitable[httpx2.Response | None]]
+    | None = None,
     timeout: float = 30,
 ) -> AsyncIterator[_ConversationApp]:
-    """실제 앱·JWT·SDK를 임시 파일 DB와 모의 HTTP에 연결한다."""
+    """실제 앱·JWT·SDK를 독립 PostgreSQL DB와 모의 HTTP에 연결한다."""
     settings = Settings(
         _env_file=None,
         openai_api_key="test-only",
@@ -77,9 +76,7 @@ async def _conversation_app(
     )
     monkeypatch.setattr("app.main.settings", settings)
     monkeypatch.setattr("app.core.security.get_settings", lambda: settings)
-    database_url = f"sqlite+aiosqlite:///{tmp_path / 'conversation.db'}"
-    engine = create_async_engine(database_url)
-    event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    engine = create_async_engine(database_url, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     request_sessions: list[AsyncSession] = []
     sdk_requests: list[httpx2.Request] = []
@@ -187,10 +184,12 @@ def _assert_error(response: Response, code: str, status: int) -> None:
 
 
 def test_conversation_created_once_reused_across_restart_and_separate_rooms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """문맥 ID를 첫 질문 전에 저장하고 방별·재시작 이후에도 재사용한다."""
-    history = AsyncMock(side_effect=AssertionError("OpenAI는 DB 이력을 조회하지 않는다."))
+    history = AsyncMock(
+        side_effect=AssertionError("OpenAI는 DB 이력을 조회하지 않는다.")
+    )
     monkeypatch.setattr(ChatRepository, "list_recent_completed", history)
 
     async def run() -> None:
@@ -211,7 +210,9 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
                 assert current.conversation_id == payload["conversation"]
             return None
 
-        async with _conversation_app(tmp_path, monkeypatch, verify_committed) as env:
+        async with _conversation_app(
+            postgresql_url, monkeypatch, verify_committed
+        ) as env:
             created = await env.client.post("/api/v1/chats")
             assert created.status_code == 201
             assert "conversation_id" not in created.json()
@@ -257,15 +258,14 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
                 ]
                 assert payload["store"] is True
 
-        async with _conversation_app(tmp_path, monkeypatch) as restarted:
+        async with _conversation_app(postgresql_url, monkeypatch) as restarted:
             resumed = await restarted.client.post(
                 path, json={"question": "재시작 후 질문"}
             )
             assert resumed.status_code == 201
             assert _payloads(restarted, "conversations") == []
             assert (
-                _payloads(restarted, "responses")[0]["conversation"]
-                == conversation_id
+                _payloads(restarted, "responses")[0]["conversation"] == conversation_id
             )
             stored, records = await _stored_chat(restarted.sessions, room)
             assert stored.conversation_id == conversation_id
@@ -276,14 +276,14 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
 
 
 def test_existing_room_records_are_preserved_without_uploading_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """기존 방은 새 문맥을 생성하고 기존 DB 기록은 조회용으로 보존한다."""
     history = AsyncMock(side_effect=AssertionError("기존 이력은 자동 이관하지 않는다."))
     monkeypatch.setattr(ChatRepository, "list_recent_completed", history)
 
     async def run() -> None:
-        async with _conversation_app(tmp_path, monkeypatch) as env:
+        async with _conversation_app(postgresql_url, monkeypatch) as env:
             created = await env.client.post("/api/v1/chats")
             room = UUID(created.json()["chat_id"])
             old_id = uuid4()
@@ -313,7 +313,9 @@ def test_existing_room_records_are_preserved_without_uploading_history(
             assert stored.conversation_id is not None
             old = next(record for record in records if record.request_id == old_id)
             assert (old.question, old.answer, old.status) == (
-                "이전 DB 질문", "이전 DB 답변", "completed"
+                "이전 DB 질문",
+                "이전 DB 답변",
+                "completed",
             )
             detail = await env.client.get(f"/api/v1/chats/{room}")
             assert detail.status_code == 200
@@ -325,7 +327,7 @@ def test_existing_room_records_are_preserved_without_uploading_history(
 
 @pytest.mark.parametrize("failure", ["server", "timeout"])
 def test_creation_failure_is_saved_and_next_request_can_create_conversation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     """문맥 생성 실패는 failed로 기록하고 다음 요청의 생성을 허용한다."""
 
@@ -343,7 +345,7 @@ def test_creation_failure_is_saved_and_next_request_can_create_conversation(
                 )
             return None
 
-        async with _conversation_app(tmp_path, monkeypatch, respond) as env:
+        async with _conversation_app(postgresql_url, monkeypatch, respond) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             path = f"/api/v1/chats/{room}/messages"
             first = await env.client.post(path, json={"question": "생성 실패 질문"})
@@ -366,7 +368,7 @@ def test_creation_failure_is_saved_and_next_request_can_create_conversation(
 
 @pytest.mark.parametrize("failure", ["server", "timeout", "incomplete"])
 def test_answer_failure_keeps_saved_conversation_for_next_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     """답변 실패 후에도 이미 저장한 문맥 ID로 다음 질문을 전송한다."""
 
@@ -388,7 +390,7 @@ def test_answer_failure_keeps_saved_conversation_for_next_request(
                 )
             return None
 
-        async with _conversation_app(tmp_path, monkeypatch, respond) as env:
+        async with _conversation_app(postgresql_url, monkeypatch, respond) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             path = f"/api/v1/chats/{room}/messages"
             first = await env.client.post(path, json={"question": "답변 실패 질문"})
@@ -403,12 +405,14 @@ def test_answer_failure_keeps_saved_conversation_for_next_request(
             assert second.status_code == 201
             assert len(_payloads(env, "conversations")) == 1
             assert [p["conversation"] for p in _payloads(env, "responses")] == [
-                saved_id, saved_id
+                saved_id,
+                saved_id,
             ]
             stored, records = await _stored_chat(env.sessions, room)
             assert stored.conversation_id == saved_id
             assert sorted(record.status for record in records) == [
-                "completed", "failed"
+                "completed",
+                "failed",
             ]
 
     asyncio.run(run())
@@ -416,6 +420,7 @@ def test_answer_failure_keeps_saved_conversation_for_next_request(
 
 @pytest.mark.parametrize("phase", ["lookup", "save"])
 def test_conversation_database_error_stops_inference_and_keeps_db_classification(
+    postgresql_url: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -432,7 +437,7 @@ def test_conversation_database_error_stops_inference_and_keeps_db_classification
     monkeypatch.setattr(ChatRepository, method, AsyncMock(side_effect=failure))
 
     async def run() -> None:
-        async with _conversation_app(tmp_path, monkeypatch) as env:
+        async with _conversation_app(postgresql_url, monkeypatch) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             response = await env.client.post(
                 f"/api/v1/chats/{room}/messages", json={"question": "DB 실패 질문"}
@@ -462,7 +467,7 @@ def test_conversation_database_error_stops_inference_and_keeps_db_classification
 
 
 def test_first_request_timeout_includes_conversation_creation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """문맥 생성 시간을 포함한 전체 제한 시간과 실패 후 ID 재사용을 확인한다."""
 
@@ -473,7 +478,9 @@ def test_first_request_timeout_includes_conversation_creation(
             nonlocal cancelled
             if request.url.path == "/v1/conversations":
                 await asyncio.sleep(0.12)
-            elif json.loads(request.content)["input"][-1]["content"] == "시간 제한 질문":
+            elif (
+                json.loads(request.content)["input"][-1]["content"] == "시간 제한 질문"
+            ):
                 try:
                     await asyncio.sleep(0.15)
                 except asyncio.CancelledError:
@@ -481,9 +488,9 @@ def test_first_request_timeout_includes_conversation_creation(
                     raise
             return None
 
-        async with (
-            _conversation_app(tmp_path, monkeypatch, respond, timeout=0.2) as env
-        ):
+        async with _conversation_app(
+            postgresql_url, monkeypatch, respond, timeout=0.2
+        ) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             path = f"/api/v1/chats/{room}/messages"
             first = await env.client.post(path, json={"question": "시간 제한 질문"})
@@ -501,7 +508,7 @@ def test_first_request_timeout_includes_conversation_creation(
 
 
 def test_user_gate_and_deletion_during_conversation_creation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """문맥 생성 중 중복 질문을 거절하고 삭제된 방의 시작된 요청은 완료한다."""
 
@@ -518,7 +525,7 @@ def test_user_gate_and_deletion_during_conversation_creation(
                 await release.wait()
             return None
 
-        async with _conversation_app(tmp_path, monkeypatch, respond) as env:
+        async with _conversation_app(postgresql_url, monkeypatch, respond) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             another = str(uuid4())
             async with env.sessions() as session:
@@ -560,7 +567,8 @@ def test_user_gate_and_deletion_during_conversation_creation(
             assert len(records) == 1 and records[0].status == "completed"
             _assert_error(await env.client.get(path), "CHAT_NOT_FOUND", 404)
             next_response = await env.client.post(
-                f"/api/v1/chats/{another}/messages", json={"question": "점유 해제 후 질문"}
+                f"/api/v1/chats/{another}/messages",
+                json={"question": "점유 해제 후 질문"},
             )
             assert next_response.status_code == 201
             assert len(_payloads(env, "conversations")) == 3
@@ -569,12 +577,12 @@ def test_user_gate_and_deletion_during_conversation_creation(
 
 
 def test_conversation_id_commit_failure_rolls_back_and_session_can_be_reused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """실제 ID 갱신의 커밋 실패를 롤백하고 같은 세션에서 다시 저장한다."""
 
     async def run() -> None:
-        async with _conversation_app(tmp_path, monkeypatch) as env:
+        async with _conversation_app(postgresql_url, monkeypatch) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             async with env.sessions() as session:
                 repository = ChatRepository(session)
@@ -604,12 +612,12 @@ def test_conversation_id_commit_failure_rolls_back_and_session_can_be_reused(
 
 
 def test_conversation_lookup_is_fresh_and_id_save_preserves_deleted_room_records(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """다른 세션의 ID 변경을 읽고 삭제된 방에도 기록을 보존하며 저장한다."""
 
     async def run() -> None:
-        async with _conversation_app(tmp_path, monkeypatch) as env:
+        async with _conversation_app(postgresql_url, monkeypatch) as env:
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             old_id = uuid4()
             deleted_at = datetime.now(UTC)
@@ -642,7 +650,9 @@ def test_conversation_lookup_is_fresh_and_id_save_preserves_deleted_room_records
             assert len(records) == 1
             assert records[0].request_id == old_id
             assert (records[0].question, records[0].answer, records[0].status) == (
-                "보존할 질문", "보존할 답변", "completed"
+                "보존할 질문",
+                "보존할 답변",
+                "completed",
             )
             _assert_error(
                 await env.client.get(f"/api/v1/chats/{room}"), "CHAT_NOT_FOUND", 404

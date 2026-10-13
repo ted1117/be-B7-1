@@ -11,8 +11,9 @@ import httpx2
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 from openai import AsyncOpenAI
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.api.dependencies import get_ai_client
 from app.core.config import Settings
@@ -24,7 +25,6 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import MessageResponse
-from conftest import _enable_sqlite_foreign_keys
 
 
 @dataclass
@@ -38,12 +38,12 @@ class _DeleteApp:
 
 @asynccontextmanager
 async def _delete_app(
-    tmp_path: Path,
+    database_url: str,
     monkeypatch: pytest.MonkeyPatch,
     respond: Callable[[httpx2.Request], Awaitable[httpx2.Response]],
     max_concurrent_requests: int = 5,
 ) -> AsyncIterator[_DeleteApp]:
-    """실제 앱·JWT 인증·SDK와 임시 파일 DB를 연결한다."""
+    """실제 앱·JWT 인증·SDK와 독립 PostgreSQL DB를 연결한다."""
     settings = Settings(
         _env_file=None,
         openai_api_key="test-only",
@@ -55,9 +55,7 @@ async def _delete_app(
     )
     monkeypatch.setattr("app.main.settings", settings)
     monkeypatch.setattr("app.core.security.get_settings", lambda: settings)
-    database_url = f"sqlite+aiosqlite:///{tmp_path / 'delete.db'}"
-    engine = create_async_engine(database_url)
-    event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    engine = create_async_engine(database_url, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     request_sessions: list[AsyncSession] = []
     sdk_requests: list[httpx2.Request] = []
@@ -74,10 +72,15 @@ async def _delete_app(
 
     async def transport(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/v1/conversations":
-            return httpx2.Response(200, json={
-                "id": "conv_delete", "object": "conversation",
-                "created_at": 1, "metadata": {},
-            })
+            return httpx2.Response(
+                200,
+                json={
+                    "id": "conv_delete",
+                    "object": "conversation",
+                    "created_at": 1,
+                    "metadata": {},
+                },
+            )
         sdk_requests.append(request)
         return await respond(request)
 
@@ -150,7 +153,10 @@ async def _assert_hidden(client: AsyncClient, path: str) -> None:
 
 @pytest.mark.parametrize("same_room", [True, False])
 def test_user_concurrency_across_rooms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_room: bool
+    postgresql_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    same_room: bool,
 ) -> None:
     """같은 사용자의 중복은 저장·AI 호출 없이 거절하고 다른 사용자는 허용한다."""
 
@@ -167,7 +173,7 @@ def test_user_concurrency_across_rooms(
                 await release.wait()
             return "답변"
 
-        async with _delete_app(tmp_path, monkeypatch, respond) as env:
+        async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             ai = AsyncMock()
             ai.model = "test-model"
             ai.generate_answer.side_effect = answer
@@ -239,7 +245,7 @@ def test_user_concurrency_across_rooms(
     "ending", ["success", "failure", "timeout", "unexpected", "cancel"]
 )
 def test_global_concurrency_rejects_and_releases_capacity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
     """전체 한도 초과를 저장·AI 호출 없이 거절하고 모든 종료 후 자리를 반환한다."""
 
@@ -268,7 +274,7 @@ def test_global_concurrency_rejects_and_releases_capacity(
             return "답변"
 
         async with _delete_app(
-            tmp_path, monkeypatch, respond, max_concurrent_requests=2
+            postgresql_url, monkeypatch, respond, max_concurrent_requests=2
         ) as env:
             ai = AsyncMock()
             ai.model = "test-model"
@@ -370,7 +376,7 @@ def test_global_concurrency_rejects_and_releases_capacity(
 
 @pytest.mark.parametrize("ending", ["failure", "timeout", "unexpected", "cancel"])
 def test_user_slot_released_after_unsuccessful_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
     """AI 오류·시간 초과·작업 취소 후 사용자 점유를 반환한다."""
 
@@ -392,7 +398,7 @@ def test_user_slot_released_after_unsuccessful_request(
                 )
             return "답변"
 
-        async with _delete_app(tmp_path, monkeypatch, respond) as env:
+        async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             ai = AsyncMock()
             ai.model = "test-model"
             ai.generate_answer.side_effect = answer
@@ -442,6 +448,7 @@ def test_user_slot_released_after_unsuccessful_request(
     ],
 )
 def test_delete_during_ai_preserves_response_and_records(
+    postgresql_url: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scenario: str,
@@ -487,7 +494,7 @@ def test_delete_during_ai_preserves_response_and_records(
                 },
             )
 
-        async with _delete_app(tmp_path, monkeypatch, respond) as env:
+        async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             created = await env.client.post("/api/v1/chats")
             assert created.status_code == 201
             chat_id = UUID(created.json()["chat_id"])
@@ -544,15 +551,16 @@ def test_delete_during_ai_preserves_response_and_records(
             assert len(env.sdk_requests) == 1
             database_url = env.database_url
 
-        reopened = create_async_engine(database_url)
+        reopened = create_async_engine(database_url, poolclass=NullPool)
         try:
             chat, messages = await _stored_chat(async_sessionmaker(reopened), chat_id)
             assert chat.deleted_at == deleted_at
             assert len(messages) == 2
             previous_stored = next(m for m in messages if m.request_id == previous_id)
-            assert MessageResponse.model_validate(previous_stored).model_dump(
-                mode="json"
-            ) == previous
+            assert (
+                MessageResponse.model_validate(previous_stored).model_dump(mode="json")
+                == previous
+            )
             result = next(m for m in messages if m.request_id == pending.request_id)
             assert str(result.request_id) == question_response.headers["X-Request-ID"]
             assert result.question == "진행 중 질문"
@@ -562,9 +570,10 @@ def test_delete_during_ai_preserves_response_and_records(
             assert result.answer == ("삭제 후 답변" if error_code is None else None)
             assert result.finished_at is not None and result.finished_at.tzinfo == UTC
             if error_code is None:
-                assert MessageResponse.model_validate(result).model_dump(
-                    mode="json"
-                ) == question_response.json()
+                assert (
+                    MessageResponse.model_validate(result).model_dump(mode="json")
+                    == question_response.json()
+                )
         finally:
             await reopened.dispose()
 
@@ -572,7 +581,7 @@ def test_delete_during_ai_preserves_response_and_records(
 
 
 def test_concurrent_delete_only_one_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """동시에 시작한 삭제 중 하나만 성공하고 최초 삭제 시각을 유지한다."""
 
@@ -580,7 +589,7 @@ def test_concurrent_delete_only_one_succeeds(
         async def reject_ai(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError("삭제는 AI를 호출하지 않아야 한다.")
 
-        async with _delete_app(tmp_path, monkeypatch, reject_ai) as env:
+        async with _delete_app(postgresql_url, monkeypatch, reject_ai) as env:
             created = await env.client.post("/api/v1/chats")
             assert created.status_code == 201
             chat_id = UUID(created.json()["chat_id"])
@@ -619,9 +628,10 @@ def test_concurrent_delete_only_one_succeeds(
                     assert response.content == b""
                 else:
                     _assert_error(response, "CHAT_NOT_FOUND")
-            assert responses[0].headers["X-Request-ID"] != responses[1].headers[
-                "X-Request-ID"
-            ]
+            assert (
+                responses[0].headers["X-Request-ID"]
+                != responses[1].headers["X-Request-ID"]
+            )
             chat, messages = await _stored_chat(env.sessions, chat_id)
             assert chat.deleted_at == winner
             assert messages == []
@@ -635,7 +645,7 @@ def test_concurrent_delete_only_one_succeeds(
 
 
 def test_concurrent_authenticated_creates_reuse_one_empty_chat(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """JWT 인증을 거치는 동시 생성 요청에서 한 번만 생성하고 나머지는 재사용한다."""
 
@@ -643,7 +653,7 @@ def test_concurrent_authenticated_creates_reuse_one_empty_chat(
         async def respond(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError("채팅방 생성에서는 AI를 호출하지 않는다.")
 
-        async with _delete_app(tmp_path, monkeypatch, respond) as env:
+        async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             responses = await asyncio.gather(
                 *(env.client.post("/api/v1/chats") for _ in range(8))
             )

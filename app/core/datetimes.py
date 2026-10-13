@@ -39,7 +39,7 @@ class UTCDateTimeType(TypeDecorator[datetime]):
     def process_bind_param(
         self, value: datetime | None, dialect: Dialect
     ) -> datetime | None:
-        """저장 시각을 UTC로 맞추고 SQLite에는 시간대를 제외해 전달한다.
+        """저장 시각을 UTC 시간대가 있는 값으로 맞춘다.
 
         Args:
             value: 저장할 시각 또는 null.
@@ -50,10 +50,7 @@ class UTCDateTimeType(TypeDecorator[datetime]):
         """
         if value is None:
             return None
-        normalized = to_utc(value)
-        if dialect.name == "sqlite":
-            return normalized.replace(tzinfo=None)
-        return normalized
+        return to_utc(value)
 
     def process_result_value(
         self, value: datetime | None, dialect: Dialect

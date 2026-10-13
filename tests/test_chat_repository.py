@@ -1,63 +1,40 @@
-"""격리한 SQLite와 PostgreSQL에서 채팅방 저장·동시성·롤백을 검증한다."""
+"""독립 PostgreSQL에서 채팅방 저장·동시성·롤백을 검증한다."""
 
 import asyncio
-import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-from sqlalchemy.schema import CreateSchema, DropSchema
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.database import Base
 from app.core.errors import DatabaseSaveError
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
-from conftest import _enable_sqlite_foreign_keys
 
 
-@pytest.fixture(params=["sqlite", "postgresql"])
+@pytest.fixture
 def repository_sessions(
-    tmp_path: Path, request: pytest.FixtureRequest
+    postgresql_engine: AsyncEngine,
 ) -> Iterator[async_sessionmaker[AsyncSession]]:
-    """테스트 전용 DB와 요청별 세션을 제공한다.
-
-    PostgreSQL은 TEST_POSTGRESQL_URL로 연결하며 테스트마다 별도 스키마를 사용한다.
+    """두 사용자를 저장한 독립 PostgreSQL 세션 팩토리를 제공한다.
 
     Args:
-        tmp_path: 테스트 DB를 저장할 임시 경로.
-        request: SQLite 또는 PostgreSQL 테스트 선택 정보.
+        postgresql_engine: 이번 테스트의 PostgreSQL 엔진.
 
     Yields:
-        기존 User 모델의 두 사용자가 저장된 세션 팩토리.
+        요청마다 새 세션을 생성하는 팩토리.
     """
-    schema = None
-    if request.param == "postgresql":
-        url = os.environ.get("TEST_POSTGRESQL_URL")
-        if not url:
-            pytest.skip("TEST_POSTGRESQL_URL이 설정되지 않았습니다.")
-        schema = f"test_chat_{uuid4().hex}"
-        engine = create_async_engine(
-            url,
-            poolclass=NullPool,
-            execution_options={"schema_translate_map": {None: schema}},
-        )
-    else:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repository.db'}")
-        event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def prepare() -> None:
         async with engine.begin() as connection:
-            if schema is not None:
-                await connection.execute(CreateSchema(schema))
             await connection.run_sync(Base.metadata.create_all)
         async with sessions() as session:
             session.add_all(
@@ -71,19 +48,8 @@ def repository_sessions(
             )
             await session.commit()
 
-    async def cleanup() -> None:
-        try:
-            if schema is not None:
-                async with engine.begin() as connection:
-                    await connection.execute(DropSchema(schema, cascade=True))
-        finally:
-            await engine.dispose()
-
     asyncio.run(prepare())
-    try:
-        yield sessions
-    finally:
-        asyncio.run(cleanup())
+    yield sessions
 
 
 def test_soft_delete_filters_user_queries_and_keeps_other_chats(
@@ -352,8 +318,6 @@ def test_user_lock_waits_only_for_same_user(
 
     async def run() -> None:
         async with repository_sessions() as holder:
-            if holder.get_bind().dialect.name != "postgresql":
-                pytest.skip("PostgreSQL 행 잠금 검증입니다.")
             await holder.scalar(select(User.id).where(User.id == 1).with_for_update())
             ready = asyncio.Event()
             blocked_pid = None

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.dependencies import RequestId
 from app.core.database import get_db
@@ -320,6 +320,7 @@ def test_existing_internal_error_has_matching_request_id(
 
 
 def test_existing_admin_routes_keep_error_contract(
+    postgresql_engine,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     event_logs: pytest.LogCaptureFixture,
@@ -327,13 +328,14 @@ def test_existing_admin_routes_keep_error_contract(
     """설정 파일을 읽지 않고 실제 관리자 라우터와 오류 형식을 검증한다."""
     import asyncio
 
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from app.core.database import Base
+    from app.core.security import create_access_token
     from app.main import app
     from app.models.user import User
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'proc.db'}")
+    engine = postgresql_engine
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def initialize():
@@ -342,9 +344,11 @@ def test_existing_admin_routes_keep_error_contract(
         async with sessions() as session:
             session.add(
                 User(
+                    id=1,
                     username="proc_user",
                     password_hash="test-only",
                     name="처리",
+                    role="admin",
                 )
             )
             await session.commit()
@@ -355,7 +359,8 @@ def test_existing_admin_routes_keep_error_contract(
 
     asyncio.run(initialize())
     monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
-    client = TestClient(app)
+    token, _ = create_access_token(1)
+    client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
     try:
         listing = client.get("/api/v1/admin/users")
         missing = client.get("/api/v1/admin/users/9999")
@@ -414,13 +419,15 @@ def test_context_is_reset_after_exception(event_logs: pytest.LogCaptureFixture) 
 
 
 def test_application_health_with_isolated_database(
-    event_logs: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    postgresql_engine,
+    event_logs: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """앱의 공통 처리와 DB 별칭이 실제 SQLite 세션으로 동작하는지 확인한다."""
+    """앱의 공통 처리와 DB 별칭이 실제 PostgreSQL 세션으로 동작하는지 확인한다."""
     from app.main import app
 
     async def run() -> None:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = postgresql_engine
         factory = async_sessionmaker(engine)
 
         async def test_db() -> AsyncGenerator[AsyncSession, None]:

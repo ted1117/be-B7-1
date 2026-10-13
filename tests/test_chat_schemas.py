@@ -1,7 +1,6 @@
-"""채팅 API 명세의 응답 구조와 상태별 데이터 규칙을 검증한다."""
+"""채팅 API 응답 예제와 상태별 데이터 규칙을 검증한다."""
 
 import json
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -20,13 +19,10 @@ from app.schemas.error import ErrorResponse
 
 
 def _response_examples() -> list[tuple[type[BaseModel], dict[str, object]]]:
-    api_path = Path(__file__).resolve().parents[1] / "docs/PRD/chat-spec.md"
-    examples = re.findall(r"```json\n(.*?)\n```", api_path.read_text(), re.S)
+    example_path = Path(__file__).with_name("data") / "chat-response-examples.json"
+    examples = json.loads(example_path.read_text())
     responses: list[tuple[type[BaseModel], dict[str, object]]] = []
-    for example in examples:
-        data = json.loads(example)
-        if "question" in data and "request_id" not in data:
-            continue
+    for data in examples:
         schema: type[BaseModel]
         if "error" in data:
             schema = ErrorResponse
@@ -43,7 +39,7 @@ def _response_examples() -> list[tuple[type[BaseModel], dict[str, object]]]:
 
 
 def test_api_contains_five_response_examples() -> None:
-    """명세서의 응답 예제 5개가 모두 검증 대상인지 확인한다."""
+    """응답 예제 5개가 모두 검증 대상인지 확인한다."""
     assert len(_response_examples()) == 5
 
 
@@ -55,7 +51,7 @@ def test_api_contains_five_response_examples() -> None:
 def test_api_response_examples_round_trip(
     schema: type[BaseModel], data: dict[str, object]
 ) -> None:
-    """명세서의 응답 예제가 필드·값 변경 없이 직렬화되는지 확인한다."""
+    """응답 예제가 필드·값 변경 없이 직렬화되는지 확인한다."""
     assert schema.model_validate(data).model_dump(mode="json") == data
 
 
@@ -118,9 +114,7 @@ def test_empty_collections() -> None:
 def test_timestamps_are_normalized_to_utc() -> None:
     """시간대가 있는 시각은 UTC로 변환하고 시간대 없는 값은 거절한다."""
     chat_id = uuid4()
-    response = ChatResponse(
-        chat_id=chat_id, created_at="2026-10-03T16:00:00+09:00"
-    )
+    response = ChatResponse(chat_id=chat_id, created_at="2026-10-03T16:00:00+09:00")
     assert response.model_dump(mode="json")["created_at"] == "2026-10-03T07:00:00Z"
     with pytest.raises(ValidationError):
         ChatResponse(chat_id=chat_id, created_at="2026-10-03T07:00:00")
