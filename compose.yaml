@@ -1,0 +1,66 @@
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/app.db
+      SYSTEM_LOG_PATH: /data/logs/system.jsonl
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - backend_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 30s
+
+  nginx:
+    image: nginx:1.30.5-alpine
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/sh", "/config/start-nginx.sh"]
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx:/config:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  certbot:
+    image: certbot/certbot:v5.8.0
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/sh", "/config/start-certbot.sh"]
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    volumes:
+      - ./deploy/start-certbot.sh:/config/start-certbot.sh:ro
+      - letsencrypt:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    depends_on:
+      nginx:
+        condition: service_healthy
+
+volumes:
+  backend_data:
+  letsencrypt:
+  certbot_webroot:
