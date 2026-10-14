@@ -105,6 +105,21 @@ PostgreSQL은 별도 DB 서비스에 데이터를 저장합니다. 로그용 `/d
 
 ## 초기 관리자 생성
 
+### 기존 정수 회원 ID에서 UUID로 전환
+
+이번 전환은 기존 회원·채팅 데이터를 초기화하는 방식이며 데이터 마이그레이션은 제공하지 않습니다. `create_all`은 기존 BIGINT 컬럼을 UUID로 바꾸지 않으므로 정수 ID 테이블이 있는 DB는 초기화 후 시작해야 합니다. 초기화하면 회원·채팅·질문 기록·폐기 토큰이 삭제되며 관리자를 새로 생성해야 합니다. 기존 JWT와 프론트 로그인 상태도 버리고 다시 로그인합니다.
+
+Compose의 DB 볼륨만 제거하는 절차는 다음과 같습니다. `<Compose프로젝트이름>_postgres_data`는 현재 PostgreSQL 컨테이너가 사용 중인 실제 볼륨 이름으로 바꿉니다. `backend_data`의 시스템 로그와 인증서 볼륨은 유지합니다.
+
+```bash
+docker compose stop backend postgres
+docker compose rm -f postgres
+docker volume rm "<Compose프로젝트이름>_postgres_data"
+docker compose up --build -d postgres backend
+```
+
+Docker 소켓 접근 권한이 없는 서버에서는 각 Docker 명령 앞에 `sudo`를 붙입니다. 외부 PostgreSQL은 해당 DB의 기존 앱 테이블을 초기화한 뒤 새 코드로 시작합니다. 아래 관리자 생성 명령은 초기화 완료 후 실행합니다.
+
 초기 관리자는 시드 스크립트로 생성합니다. Compose에서는 다음 명령으로 비밀번호 프롬프트를 열어 생성합니다.
 
 ```bash
@@ -155,7 +170,7 @@ AI 이벤트는 호출 전체의 시작·최종 결과이며 개별 재시도는
 rg -F '응답에서 확인한-request-id' logs/system.jsonl
 ```
 
-관리자 `/api/v1/admin/system-logs`는 이벤트·레벨·기간으로 유효한 줄을 필터링해 최신순으로 기본 필드를 반환합니다. 파일의 사용자 ID는 문자열, 관리자 응답은 정수입니다. 기존 `http_status`는 `status_code`로 읽으며 두 값이 있으면 새 필드를 우선합니다. 잘못된 JSON·필드·시각은 조회에서 제외하며 원본 파일은 수정하지 않습니다.
+관리자 `/api/v1/admin/system-logs`는 이벤트·레벨·기간으로 유효한 줄을 필터링해 최신순으로 기본 필드를 반환합니다. 새 사용자 ID는 파일과 관리자 응답에서 UUID 문자열이며, 과거 정수 사용자 ID 로그도 그대로 조회할 수 있습니다. 기존 `http_status`는 `status_code`로 읽으며 두 값이 있으면 새 필드를 우선합니다. 잘못된 JSON·필드·시각은 조회에서 제외하며 원본 파일은 수정하지 않습니다.
 
 파일 쓰기 오류는 stderr에 표시될 수 있고, 시작 시 경로 생성·파일 열기 실패는 앱 시작을 막을 수 있습니다. 권한·디스크를 확인하고 로그 로테이션·보관 기간은 별도 설정합니다.
 

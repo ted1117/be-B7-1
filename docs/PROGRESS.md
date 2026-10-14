@@ -1,133 +1,105 @@
-# Progress: PostgreSQL 전환
+# Progress: 회원 ID UUID 전환
 
-Last updated: 2026-10-14 02:35
+Last updated: 2026-10-14 19:42
 
 ## Goal
 
-- 기존 데이터 이관 없이 SQLite 저장소를 PostgreSQL로 전환한다.
+- 회원 ID와 연결된 DB·인증·API·로그·테스트를 정수에서 UUID로 전환한다.
 
 ## Current Status
 
 - Status: Ready for review
-- Current focus: 5단계 완료 및 코드·문서 분리 커밋 완료 — 진행 문서 가독성 정리
-- Branch: refactor/postgresql
+- Current focus: UUID 전환 구현 및 전체 검증 완료 — 변경 사항 검토와 커밋 대기
+- Branch: refactor/user-uuid
 - Related issue/PR: 없음
 
 ## Decisions
 
-- [2026-10-14] PRD 없이 단계별로 진행하며, 기존 데이터 이관 및 마이그레이션 도구 도입은 제외한다.
-- [2026-10-14] 기존 Settings를 유지하고 DATABASE_URL을 필수로 받는다. SQLite 전용 초기화·시각 분기·aiosqlite는 제거한다.
-- [2026-10-14] 채팅방 생성은 사용자 행의 FOR UPDATE 잠금과 생성·재사용을 같은 트랜잭션에서 처리한다. PostgreSQL 기본 READ COMMITTED 격리를 유지한다.
-- [2026-10-14] Compose에 PostgreSQL 16과 DB 전용 볼륨을 추가하고, 백엔드는 DB healthcheck 통과 후 시작한다. DATABASE_URL 및 POSTGRES_PASSWORD는 배포 환경에서 제공한다.
-- [2026-10-14] 기존 큰 회원 ID를 보존하도록 회원·채팅방 소유자 ID는 BIGINT로 정의한다. UUID 전환은 추후 별도 리팩토링에서 검토한다.
-- [2026-10-14] DB 테스트는 독립 임시 PostgreSQL DB를 생성·정리하고 .env를 읽지 않는다. 없는 PRD에 의존하던 응답 예제는 테스트 데이터로 분리한다.
-- [2026-10-14] 코드·테스트·설정 변경과 문서 변경은 별도 커밋으로 나눈다. 진행 문서의 제목·문단·형식은 유지하되 bullet 개수는 내용에 맞게 조정한다.
+- [2026-10-14] 사용자 확인에 따라 PRD 없이 진행하며 기존 데이터는 초기화 가능한 것으로 한다. 데이터 마이그레이션과 실제 운영 DB 초기화는 수행하지 않는다.
+- [2026-10-14] User.id는 UUID4를 자동 생성하고 Chat.user_id도 UUID 외래키로 변경한다.
+- [2026-10-14] JWT sub는 UUID 문자열을 사용하고 인증 시 UUID로 복원한다. 기존 정수 ID JWT는 거절하며 전환 후 재로그인이 필요하다.
+- [2026-10-14] 회원 응답·관리자 경로·조회 조건은 UUID를 사용한다. 프론트는 ID를 숫자로 변환하지 않고 UUID 문자열로 전달해야 한다.
+- [2026-10-14] 사용자별 질문 제한과 빈 채팅방 생성 잠금은 UUID를 사용자 키로 사용하며 기존 처리 정책을 유지한다.
+- [2026-10-14] 새 시스템 로그는 UUID 문자열로 반환하며 과거 정수 ID 로그의 읽기 호환성을 유지한다.
+- [2026-10-14] 진행 문서의 제목·섹션·형식은 유지하고 bullet 개수는 내용에 맞게 조정한다. 코드와 문서는 별도 커밋 메시지를 추천하며 요청 전에는 커밋하지 않는다.
 
 ## Completed
 
-- [x] 1단계: asyncpg 추가 및 DATABASE_URL 필수화
-- [x] 2단계: 운영 PRAGMA 제거, PostgreSQL insert 적용, SQLite 테스트 초기화 분리. 임시 PostgreSQL의 테이블·외래키·토큰 폐기 검증 및 관련 테스트 171개 통과
-- [x] 3단계: 사용자 행 잠금 추가. PostgreSQL에서 12개 연결의 동시 생성·재사용, 사용자별 잠금 분리 및 실패 후 잠금 해제 검증. 관련 테스트 187개 통과
-- [x] 4단계: Compose PostgreSQL 서비스·전용 볼륨·시작 순서 구성. 이미지 빌드·기동·기본 API 및 컨테이너 재생성 후 데이터 보존 확인
-- [x] 5단계: 모든 DB 테스트 PostgreSQL 전환, BIGINT·외래키·UTC 시각 대응, SQLite 의존성 제거, 응답 예제 분리 및 설정·운영 문서 갱신
-- [x] 최종 검증: 전체 테스트 485개, Ruff·잠금 파일 검사, 최종 이미지 기동·관리자 시드·읽기 전용 SQL 검증 통과
-- [x] 5단계 분리 커밋: 코드·테스트·설정 `7252fea`, 문서 `e3f1007`
+- [x] 현재 main의 3e1b0b0에서 refactor/user-uuid 브랜치 생성
+- [x] 회원 기본키와 채팅방 소유자 외래키 UUID 전환 및 UUID4 자동 생성
+- [x] JWT 발급·검증·복원과 인증 dependency의 UUID 타입 적용
+- [x] 관리자 API·응답 스키마·서비스·Repository의 회원 ID 타입 전환
+- [x] 사용자별 질문 제한기의 UUID 키 적용 및 기존 동시성·소유권 정책 유지
+- [x] UUID 시스템 로그 조회와 기존 정수 로그 호환성 검증
+- [x] 기존 테스트의 사용자 데이터 전환 및 UUID 생성·JWT·OpenAPI·관리자 보호 회귀 테스트 추가
+- [x] 독립 PostgreSQL DB에서 전체 테스트 498개 통과
+- [x] 변경 Python 파일 Ruff 검사·포맷 통과
+- [x] DB 형식·인증·초기화·재로그인 안내와 진행 문서 갱신
 
 ## In Progress
 
-- [ ] 구현 작업 없음 — 실제 배포 환경 설정 및 운영 검증 대기
+- [ ] 구현 완료 — 변경 사항 검토 및 커밋 대기
 
 ## Next Steps
 
-1. 진행 문서 정리 변경을 검토하고 커밋한다.
-2. 실제 배포 환경의 PostgreSQL 비밀번호와 DATABASE_URL을 설정한다.
-3. 운영 배포 후 health·초기 관리자·인증·질문·데이터 보존을 확인한다.
+1. 코드·테스트와 문서 변경을 검토하고 별도로 커밋한다.
+2. 배포 대상의 기존 정수 ID DB를 초기화하고 새 코드로 테이블을 생성한다.
+3. 관리자를 새로 생성하고 재로그인·UUID API·프론트 ID 처리·실제 AI 대화를 확인한다.
 
 ## Changed Files
 
-- `app/core/config.py`: DATABASE_URL 필수 설정
-- `app/core/database.py`, `app/repositories/token_repository.py`: SQLite 초기화 제거 및 PostgreSQL 토큰 저장
-- `app/repositories/chat_repository.py`: 사용자 행 잠금으로 빈 채팅방 동시 생성 방지
-- `app/models/user.py`, `app/models/chat.py`, `app/core/datetimes.py`: 큰 회원 ID 보존 및 UTC 저장 분기 정리
-- `compose.yaml`: PostgreSQL 서비스·전용 볼륨·healthcheck 및 시작 순서 구성
-- `pyproject.toml`, `uv.lock`: asyncpg 추가 및 aiosqlite 제거
-- `tests/conftest.py`: 운영 설정을 읽지 않는 독립 PostgreSQL 테스트 DB 제공
-- `tests/test_auth_api.py`, `tests/test_login_api.py`, `tests/test_admin_api.py`: 인증·관리자 DB 테스트 전환
-- `tests/test_chat_api.py`, `tests/test_chat_models.py`, `tests/test_chat_repository.py`: 채팅 API·모델 제약·동시성 테스트 전환
-- `tests/test_chat_integration.py`, `tests/test_chat_conversation_integration.py`, `tests/test_chat_delete_integration.py`: AI·Conversation·삭제 통합 테스트 전환
-- `tests/test_request_processing.py`: PostgreSQL 기반 health 및 관리자 오류 처리 검증
-- `tests/test_chat_schemas.py`, `tests/data/chat-response-examples.json`: PRD 없는 응답 예제 검증
-- `.env.example`: PostgreSQL 연결 및 초기화 설정 예제
-- `README.md`, `docs/ARCHITECTURE.md`: 기술 스택과 동시 생성 처리 설명 갱신
-- `docs/DATABASE.md`, `docs/GETTING_STARTED.md`, `docs/OPERATIONS.md`: 연결·개발·배포·조회·백업 안내 갱신
-- `scripts/seed_admin.py`: PostgreSQL 연결을 사용하는 관리자 시드 설명 갱신
-- `docs/PROGRESS.md`: 단계별 진행 상태와 검증 결과 기록
+- `app/models/user.py`, `app/models/chat.py`: UUID 기본키·외래키 및 회원 UUID4 자동 생성
+- `app/core/security.py`, `app/api/dependencies.py`: UUID JWT 검증·복원과 인증 ID 타입
+- `app/core/chat_request_limiter.py`: 사용자별 동시 질문 제한기의 UUID 키
+- `app/api/v1/endpoints/admin.py`, `app/schemas/auth.py`, `app/schemas/admin.py`: 회원 UUID 응답·경로·조회 조건 및 과거 로그 호환성
+- `app/services/chat_service.py`, `app/services/admin_service.py`: 사용자 UUID 타입 연결
+- `app/repositories/chat_repository.py`, `app/repositories/admin_db.py`, `app/repositories/admin_repositories.py`: 조회·저장·잠금의 UUID 타입
+- `tests/user_ids.py`: 테스트 사용자용 고정 UUID 제공
+- `tests/test_user_uuid.py`: UUID 생성·DB 타입·JWT·OpenAPI 검증
+- `tests/test_auth_api.py`, `tests/test_login_api.py`, `tests/test_my_info_api.py`: UUID 회원 인증·조회 테스트
+- `tests/test_admin_api.py`: UUID 관리자 조회·권한 보호·입력 검증 및 로그 호환성 테스트
+- `tests/test_chat_api.py`, `tests/test_chat_models.py`, `tests/test_chat_repository.py`: UUID 소유권·모델 제약·동시성 검증
+- `tests/test_chat_integration.py`, `tests/test_chat_conversation_integration.py`, `tests/test_chat_delete_integration.py`: UUID 통합 테스트 데이터
+- `tests/test_chat_request_limiter.py`, `tests/test_openapi.py`, `tests/test_request_processing.py`: UUID 제한기·API 명세·관리자 오류 처리 테스트
+- `docs/ARCHITECTURE.md`, `docs/DATABASE.md`, `docs/OPERATIONS.md`: UUID 계약·DB 초기화·재로그인·로그 호환성 안내
+- `docs/PROGRESS.md`: 현재 작업과 검증 결과 기록
 
 ## Commands Run
 
 ```text
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv add asyncpg
-asyncpg 0.32.0 설치 및 uv.lock 갱신 완료
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv run --no-sync python - <<'PY' ... PY
-_env_file=None으로 설정 누락 오류, 명시적 URL 및 환경변수 반영, asyncpg 엔진 생성 확인 (DB 연결 없음)
-/opt/homebrew/opt/postgresql@16/bin/initdb 및 pg_ctl start
-/private/tmp 전용 임시 클러스터와 Unix 소켓으로 PostgreSQL 16 실행
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv run --no-sync python - <<'PY' ... PY
-_env_file=None과 테스트 설정으로 실제 PostgreSQL 테이블 생성, 외래키 거절, 토큰 반복 폐기, 8개 세션 동시 폐기, 만료 토큰 정리 및 세션 복구 검증 통과
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv run --no-sync python - <<'PY' ... pytest.main(...) ... PY
-env_file 사용을 비활성화한 관련 기존 SQLite 테스트: repository/API 69개, integration/conversation/delete/login/my_info 102개 통과; tests/conftest.py 이동 후 동일한 171개 재검증 통과
-/opt/homebrew/opt/postgresql@16/bin/pg_ctl stop -m fast
-임시 PostgreSQL 서버 종료 완료
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv run --no-sync python - <<'PY' ... pytest.main(...) ... PY
-3단계: TEST_POSTGRESQL_URL로 임시 PostgreSQL 연결, 테스트별 별도 스키마 생성·정리; Repository 및 관련 기존 API 테스트 187개 통과, SQLite 행 잠금 검증 1개 제외
-동일한 동시 생성 테스트에서 Select.with_for_update를 테스트 중에만 비활성화
-12개 채팅방 중복 생성으로 테스트 실패 확인 — 회귀 검증이 기존 문제를 잡음을 확인
-/opt/homebrew/opt/postgresql@16/bin/pg_ctl stop -m fast
-3단계 검증 후 임시 PostgreSQL 서버 종료 완료
-docker compose config --quiet (별도 테스트 환경변수 파일 및 env_file override 사용)
-Compose 구성 검증 통과, 원본 .env 접근 없음
-docker compose up --build --wait --wait-timeout 90 backend (별도 b7pg-stage4-gkezqr 프로젝트)
-이미지 빌드 및 PostgreSQL·백엔드 healthy 확인
-docker compose exec -T backend python - initial < smoke.py
-빈 PostgreSQL 테이블 4개 생성, READ COMMITTED, /health 200, 회원가입·로그인·채팅 생성 201 및 재사용 200·로그아웃 검증 통과
-docker compose up --force-recreate --always-recreate-deps --wait --wait-timeout 90 backend
-테스트 PostgreSQL·백엔드 컨테이너 재생성 후 healthy 확인
-docker compose exec -T backend python - recreated < smoke.py
-회원·채팅방·폐기 토큰 데이터 보존 및 /health·로그인·채팅방 재사용 확인
-docker compose down --volumes --rmi local (별도 테스트 프로젝트만)
-테스트 컨테이너·전용 볼륨·네트워크·빌드 이미지 정리 완료
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv remove --offline aiosqlite
-aiosqlite 제거 및 uv.lock 갱신 완료
-TEST_POSTGRESQL_URL=<임시 PostgreSQL Unix 소켓 주소> uv run --no-sync pytest -q --tb=short
-5단계 전체 485개 통과, 실패·제외·건너뛰기 없음; 각 테스트의 독립 임시 DB 생성·정리 완료
-Ruff check 및 format --check (이번 변경 Python 파일 16개)
-모두 통과
-UV_CACHE_DIR=/private/tmp/b7-postgresql-uv-cache uv lock --check --offline
-잠금 파일 검증 통과
-docker compose up --build --wait --wait-timeout 90 backend (별도 테스트 프로젝트 및 임시 설정)
-최종 코드·의존성 이미지 빌드, PostgreSQL·백엔드 healthy 및 health·인증·채팅·로그아웃 검증 통과
-docker compose exec -T backend python scripts/seed_admin.py --username stage5_admin --name 관리자 (테스트 전용 비밀번호 환경변수 제공)
-관리자 생성 및 재실행 시 중복 생성 없이 종료 확인
-docs/DATABASE.md의 읽기 전용 PostgreSQL 조회 명령 4개 실행
-모두 통과
-임시 PostgreSQL의 test_b7_ DB 개수 확인 및 테스트 Compose down --volumes --rmi local, pg_ctl stop
-남은 테스트 DB 0개, 테스트 컨테이너·전용 볼륨·네트워크·이미지 정리 및 임시 서버 종료 완료
+git switch -c refactor/user-uuid
+현재 main에서 브랜치 생성 완료
+
+임시 PostgreSQL 16 서버 시작
+운영 DB와 분리된 임시 DB로 검증
+
+TEST_POSTGRESQL_URL=<임시 PostgreSQL 주소> uv run --no-sync pytest -q --tb=short
+전체 498개 통과, 실패·제외·건너뛰기 없음
+
+Ruff check 및 format --check (변경 Python 파일)
+통과
+
+임시 PostgreSQL의 test_b7_ DB 개수 확인 및 pg_ctl stop
+남은 테스트 DB 0개, 이번 작업의 임시 서버 종료 완료
+
 git diff --check
 통과
 ```
 
 ## Test Status
 
-- Last passing: 전체 테스트 485개 통과, 실패·제외·건너뛰기 없음
-- Last passing: 변경 Python 파일 Ruff 검사·포맷 및 uv.lock 검증 통과
-- Last passing: 최종 이미지 기동·health·인증·채팅·로그아웃·관리자 시드·읽기 전용 SQL 검증 통과
-- Failing: 실행한 검증에서 실패 없음
-- Not run: 실제 운영 배포 및 외부 OpenAI 실제 호출 검증; 테스트의 AI 응답은 모의 HTTP·클라이언트 사용
+- Last passing: 전체 테스트 498개 통과, 실패·제외·건너뛰기 없음
+- Last passing: 회원 UUID4 생성·저장·재조회, DB UUID 컬럼·외래키, JWT UUID 복원 및 기존 정수 sub 거절 검증
+- Last passing: 관리자 UUID 입력·자기 강등 차단, UUID 로그 및 과거 정수 로그 조회, 소유권·동시성·롤백 검증
+- Last passing: 변경 Python 파일 Ruff 검사·포맷 및 git diff --check 통과
+- Failing: 없음
+- Not run: 실제 운영 DB 초기화·배포, 별도 프론트 저장소의 ID 처리 검증 및 외부 OpenAI 실제 호출
 
 ## Risks / Open Questions
 
-- 배포 시 DATABASE_URL과 POSTGRES_PASSWORD를 제공하고 URL의 사용자·DB·비밀번호를 PostgreSQL 설정과 일치시켜야 한다.
-- 기본 사용자·DB는 b7, Compose 내부 DB 호스트는 postgres이며 READ COMMITTED 격리를 유지해야 한다.
-- 테스트에는 임시 DB 생성·삭제 권한이 있는 TEST_POSTGRESQL_URL이 필요하다. 미설정 시 DB 테스트는 명시적으로 실패한다.
-- 원본 .env는 읽거나 수정하지 않았으며 실제 운영 배포는 수행하지 않았다.
-- 기존 SQLite 데이터 이관은 제외했다. 실제 OpenAI 호출·운영 부하·비용은 이번 검증 범위에 포함하지 않는다.
+- create_all은 기존 BIGINT 컬럼을 UUID로 바꾸지 않는다. 배포 전에 승인된 초기화 절차로 기존 정수 ID DB를 새로 생성해야 한다.
+- DB 초기화 시 기존 회원·채팅·질문·폐기 토큰이 삭제되며 관리자를 다시 생성해야 한다.
+- 기존 숫자 회원 ID JWT는 사용할 수 없다. 프론트의 기존 로그인 상태를 지우고 다시 로그인해야 한다.
+- 프론트는 회원 ID를 UUID 문자열로 취급해야 하며 실제 프론트 저장소는 이번 작업에서 수정하거나 검증하지 않았다.
+- 과거 정수 ID 시스템 로그는 보존되지만 새 UUID 회원과 매핑하지 않는다.
+- .env와 실제 운영 DB는 읽거나 변경하지 않았다. 실제 AI 호출·운영 부하·비용은 이번 검증 범위에 포함하지 않는다.
