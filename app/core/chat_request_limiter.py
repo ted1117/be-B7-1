@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from app.core.errors import APIError
 
@@ -19,10 +20,10 @@ class ChatRequestLimiter:
         if max_concurrent_requests <= 0:
             raise ValueError("최대 동시 질문 수는 양수여야 합니다.")
         self._max_concurrent_requests = max_concurrent_requests
-        self._active_users: set[int] = set()
+        self._active_users: set[UUID] = set()
 
     @asynccontextmanager
-    async def acquire(self, user_id: int) -> AsyncIterator[None]:
+    async def acquire(self, user_id: UUID) -> AsyncIterator[None]:
         """사용자와 전체 처리 자리를 점유하고 질문 처리 종료 시 해제한다.
 
         Args:

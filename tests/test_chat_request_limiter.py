@@ -10,6 +10,7 @@ from app.core.chat_request_limiter import ChatRequestLimiter
 from app.core.errors import APIError
 from app.models.chat import Chat, ChatLog
 from app.services.chat_service import ChatService
+from tests.user_ids import user_uuid
 
 
 @pytest.mark.parametrize("phase", ["history", "question", "answer", "failure"])
@@ -19,7 +20,7 @@ def test_database_failure_releases_user(phase: str) -> None:
     async def run() -> None:
         limiter = ChatRequestLimiter(max_concurrent_requests=1)
         repository = AsyncMock()
-        repository.get_by_id_and_user.return_value = Chat(user_id=1)
+        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
         repository.list_recent_completed.return_value = []
         service = ChatService(repository, limiter)
         ai = AsyncMock()
@@ -35,8 +36,8 @@ def test_database_failure_releases_user(phase: str) -> None:
         if phase == "failure":
             ai.generate_answer.side_effect = APIError("AI_UNAVAILABLE")
         with pytest.raises(OperationalError):
-            await service.send_message(uuid4(), 1, uuid4(), "질문", ai)
-        async with limiter.acquire(2):
+            await service.send_message(uuid4(), user_uuid(1), uuid4(), "질문", ai)
+        async with limiter.acquire(user_uuid(2)):
             pass
 
     asyncio.run(run())
@@ -49,7 +50,7 @@ def test_user_remains_busy_until_answer_saved() -> None:
         saving = asyncio.Event()
         release = asyncio.Event()
         repository = AsyncMock()
-        repository.get_by_id_and_user.return_value = Chat(user_id=1)
+        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
         repository.list_recent_completed.return_value = []
 
         async def save(message: ChatLog) -> None:
@@ -65,22 +66,24 @@ def test_user_remains_busy_until_answer_saved() -> None:
         ai.model = "test-model"
         ai.generate_answer.return_value = "답변"
         task = asyncio.create_task(
-            service.send_message(uuid4(), 1, uuid4(), "질문", ai)
+            service.send_message(uuid4(), user_uuid(1), uuid4(), "질문", ai)
         )
         try:
             await asyncio.wait_for(saving.wait(), 2)
             with pytest.raises(APIError) as error:
-                await service.send_message(uuid4(), 1, uuid4(), "중복", ai)
+                await service.send_message(uuid4(), user_uuid(1), uuid4(), "중복", ai)
             assert error.value.api_code == "CHAT_BUSY"
             with pytest.raises(APIError) as error:
-                await service.send_message(uuid4(), 2, uuid4(), "다른 사용자 질문", ai)
+                await service.send_message(
+                    uuid4(), user_uuid(2), uuid4(), "다른 사용자 질문", ai
+                )
             assert error.value.api_code == "SERVER_BUSY"
             assert repository.list_recent_completed.await_count == 1
             assert ai.generate_answer.await_count == 1
         finally:
             release.set()
             await task
-        async with limiter.acquire(2):
+        async with limiter.acquire(user_uuid(2)):
             pass
 
     asyncio.run(run())
@@ -98,23 +101,26 @@ def test_full_capacity_rejections_preserve_occupied_slots() -> None:
 
     async def run() -> None:
         limiter = ChatRequestLimiter(max_concurrent_requests=2)
-        async with limiter.acquire(1):
-            async with limiter.acquire(2):
-                for user_id, code in [(1, "CHAT_BUSY"), (3, "SERVER_BUSY")]:
+        async with limiter.acquire(user_uuid(1)):
+            async with limiter.acquire(user_uuid(2)):
+                for user_id, code in [
+                    (user_uuid(1), "CHAT_BUSY"),
+                    (user_uuid(3), "SERVER_BUSY"),
+                ]:
                     with pytest.raises(APIError) as error:
                         async with limiter.acquire(user_id):
                             pytest.fail("한도 초과 요청이 승인됐다.")
                     assert error.value.api_code == code
                 with pytest.raises(APIError) as error:
-                    async with limiter.acquire(2):
+                    async with limiter.acquire(user_uuid(2)):
                         pytest.fail("기존 사용자 점유가 사라졌다.")
                 assert error.value.api_code == "CHAT_BUSY"
-            async with limiter.acquire(3):
+            async with limiter.acquire(user_uuid(3)):
                 with pytest.raises(APIError) as error:
-                    async with limiter.acquire(4):
+                    async with limiter.acquire(user_uuid(4)):
                         pytest.fail("기존 전체 점유가 사라졌다.")
                 assert error.value.api_code == "SERVER_BUSY"
-        async with limiter.acquire(4), limiter.acquire(5):
+        async with limiter.acquire(user_uuid(4)), limiter.acquire(user_uuid(5)):
             pass
 
     asyncio.run(run())

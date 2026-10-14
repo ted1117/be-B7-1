@@ -8,6 +8,7 @@ core/errors.py 형식으로 통일한다. size 상한으로 한 번에 주는 �
 """
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
@@ -53,7 +54,7 @@ async def list_users(
 
 @router.get("/users/{user_id}", response_model=UserDetail, summary="회원 상세 조회")
 async def get_user(
-    user_id: int,
+    user_id: UUID,
     service: Annotated[AdminService, Depends(get_admin_service)],
 ):
     return await service.get_user(user_id)
@@ -63,7 +64,7 @@ async def get_user(
     "/users/{user_id}/role", response_model=RoleUpdateResponse, summary="회원 권한 변경"
 )
 async def update_user_role(
-    user_id: int,
+    user_id: UUID,
     body: RoleUpdateRequest,
     service: Annotated[AdminService, Depends(get_admin_service)],
     admin: Annotated[dict, Depends(require_admin)],
@@ -74,7 +75,7 @@ async def update_user_role(
 @router.get("/logs", response_model=Page[ChatLogItem], summary="대화 기록 목록 조회")
 async def list_logs(
     service: Annotated[AdminService, Depends(get_admin_service)],
-    user_id: int | None = None,
+    user_id: UUID | None = None,
     start: UtcDateTime | None = None,
     end: UtcDateTime | None = None,
     page: int = Query(1, ge=1),
@@ -87,7 +88,7 @@ async def list_logs(
 @router.get("/sessions", response_model=Page[SessionItem], summary="세션 목록 조회")
 async def list_sessions(
     service: Annotated[AdminService, Depends(get_admin_service)],
-    user_id: int,
+    user_id: UUID,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
 ):

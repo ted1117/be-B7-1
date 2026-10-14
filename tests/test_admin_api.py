@@ -19,6 +19,7 @@ from app.main import app
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.schemas.admin import UserDetail
+from tests.user_ids import user_uuid
 
 
 async def _admin_override() -> dict:
@@ -53,7 +54,7 @@ def admin_db(postgresql_engine, tmp_path):
             chat_id = uuid4()
             session.add(
                 User(
-                    id=1,
+                    id=user_uuid(1),
                     username="user_a",
                     password_hash="test-only",
                     name="사용자A",
@@ -64,7 +65,7 @@ def admin_db(postgresql_engine, tmp_path):
             )
             session.add(
                 User(
-                    id=2,
+                    id=user_uuid(2),
                     username="user_b",
                     password_hash="test-only",
                     name="사용자B",
@@ -74,7 +75,7 @@ def admin_db(postgresql_engine, tmp_path):
                 )
             )
             await session.flush()
-            session.add(Chat(chat_id=chat_id, user_id=1, created_at=now))
+            session.add(Chat(chat_id=chat_id, user_id=user_uuid(1), created_at=now))
             await session.flush()
             session.add(
                 ChatLog(
@@ -145,7 +146,7 @@ def test_admin_blocks_non_admin_role(admin_db, monkeypatch):
     from app.core.security import create_access_token
 
     monkeypatch.delitem(app.dependency_overrides, require_admin)
-    token, _ = create_access_token(2)
+    token, _ = create_access_token(user_uuid(2))
     res = TestClient(app).get(
         "/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"}
     )
@@ -158,11 +159,37 @@ def test_admin_allows_admin_role(admin_db, monkeypatch):
     from app.core.security import create_access_token
 
     monkeypatch.delitem(app.dependency_overrides, require_admin)
-    token, _ = create_access_token(1)
+    token, _ = create_access_token(user_uuid(1))
     res = TestClient(app).get(
         "/api/v1/admin/users", headers={"Authorization": f"Bearer {token}"}
     )
     assert res.status_code == 200
+
+
+def test_uuid_admin_cannot_demote_self(admin_db, monkeypatch):
+    """UUID 회원 ID를 비교해 관리자 자신의 권한 해제를 거절한다."""
+    from app.core.security import create_access_token
+
+    monkeypatch.delitem(app.dependency_overrides, require_admin)
+    token, _ = create_access_token(user_uuid(1))
+    response = TestClient(app).patch(
+        f"/api/v1/admin/users/{user_uuid(1)}/role",
+        json={"role": "user"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CANNOT_DEMOTE_SELF"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/v1/admin/users/1", "/api/v1/admin/logs?user_id=1"],
+)
+def test_admin_rejects_numeric_user_identifiers(db_client, path):
+    """회원 경로와 조회 조건에서 정수 ID를 UUID로 잘못 해석하지 않는다."""
+    response = db_client.get(path)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
 
 
 def test_health():
@@ -192,14 +219,14 @@ def test_list_users_slices_by_page(db_client):
 
 def test_user_detail_serializes_only_declared_fields(db_client):
     # 응답이 스키마에 선언한 필드만 나가는지(민감 필드 노출 차단) 확인한다.
-    detail = db_client.get("/api/v1/admin/users/1").json()
+    detail = db_client.get(f"/api/v1/admin/users/{user_uuid(1)}").json()
     assert set(detail) <= set(UserDetail.model_fields)
     assert "password" not in json.dumps(detail).lower()
 
 
 def test_get_user_not_found_returns_standard_error(db_client):
     # 없는 회원은 404와 공통 에러 형식(code·request_id)으로 오는지 확인한다.
-    res = db_client.get("/api/v1/admin/users/9999")
+    res = db_client.get(f"/api/v1/admin/users/{user_uuid(9999)}")
     assert res.status_code == 404
     error = res.json()["error"]
     assert error["code"] == "USER_NOT_FOUND"
@@ -208,38 +235,53 @@ def test_get_user_not_found_returns_standard_error(db_client):
 
 def test_update_role_promotes_user(db_client):
     # user → admin 승격이 200과 변경된 역할로 오는지 확인한다.
-    res = db_client.patch("/api/v1/admin/users/2/role", json={"role": "admin"})
+    res = db_client.patch(
+        f"/api/v1/admin/users/{user_uuid(2)}/role", json={"role": "admin"}
+    )
     assert res.status_code == 200
-    assert res.json() == {"id": 2, "username": "user_b", "role": "admin"}
+    assert res.json() == {
+        "id": str(user_uuid(2)),
+        "username": "user_b",
+        "role": "admin",
+    }
 
 
 def test_update_role_rejects_invalid_role(db_client):
     # admin·user가 아니면 422와 공통 오류 형식으로 거절하는지 확인한다.
-    res = db_client.patch("/api/v1/admin/users/2/role", json={"role": "owner"})
+    res = db_client.patch(
+        f"/api/v1/admin/users/{user_uuid(2)}/role", json={"role": "owner"}
+    )
     assert res.status_code == 422
 
 
 def test_update_role_not_found(db_client):
     # 없는 회원은 404와 공통 오류 형식으로 오는지 확인한다.
-    res = db_client.patch("/api/v1/admin/users/9999/role", json={"role": "admin"})
+    res = db_client.patch(
+        f"/api/v1/admin/users/{user_uuid(9999)}/role", json={"role": "admin"}
+    )
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "USER_NOT_FOUND"
 
 
 def test_list_logs_filters_by_user(db_client):
     # 대화 기록이 그 회원 소유 세션으로 걸러지는지 확인한다(기록은 chat_id로 묶임).
-    res = db_client.get("/api/v1/admin/logs", params={"user_id": 1})
+    res = db_client.get("/api/v1/admin/logs", params={"user_id": str(user_uuid(1))})
     assert res.status_code == 200
     assert res.json()["total"] == 2
     # 소유 세션이 없는 회원은 0건이다.
     assert (
-        db_client.get("/api/v1/admin/logs", params={"user_id": 2}).json()["total"] == 0
+        db_client.get(
+            "/api/v1/admin/logs", params={"user_id": str(user_uuid(2))}
+        ).json()["total"]
+        == 0
     )
 
 
 def test_logs_return_record_fields(db_client):
     # 대화 기록이 request_id·status·error_code 등 기록 필드로 오는지 확인한다.
-    items = db_client.get("/api/v1/admin/logs", params={"user_id": 1}).json()["items"]
+    items = db_client.get(
+        "/api/v1/admin/logs", params={"user_id": str(user_uuid(1))}
+    ).json()["items"]
     assert items
     expected = {
         "request_id",
@@ -258,7 +300,9 @@ def test_logs_return_record_fields(db_client):
 
 def test_sessions_and_detail(db_client):
     # 사용자 세션 목록 → 세션 상세(그 세션의 대화 포함) 흐름을 확인한다.
-    listing = db_client.get("/api/v1/admin/sessions", params={"user_id": 1}).json()
+    listing = db_client.get(
+        "/api/v1/admin/sessions", params={"user_id": str(user_uuid(1))}
+    ).json()
     assert listing["total"] == 1
     item = listing["items"][0]
     assert "title" not in item
@@ -340,6 +384,24 @@ def test_system_logs_read_from_file_with_event_filter(file_client):
     assert body["items"][0]["status_code"] == 200
     assert "http_status" not in body["items"][0]
     assert "_ts" not in body["items"][0]
+
+
+def test_system_logs_read_uuid_user_id(file_client, sample_log_file):
+    """새 UUID 사용자 로그를 표준 UUID 문자열로 반환한다."""
+    value = str(user_uuid(7))
+    record = {
+        "timestamp": "2026-10-14T03:00:00Z",
+        "level": "INFO",
+        "event": "uuid_user_event",
+        "user_id": value,
+    }
+    with sample_log_file.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
+    response = file_client.get(
+        "/api/v1/admin/system-logs", params={"event": "uuid_user_event"}
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["user_id"] == value
 
 
 def test_system_logs_sorted_newest_first(file_client):

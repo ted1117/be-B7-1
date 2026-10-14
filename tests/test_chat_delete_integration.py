@@ -25,6 +25,7 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.chat import MessageResponse
+from tests.user_ids import user_uuid
 
 
 @dataclass
@@ -103,10 +104,15 @@ async def _delete_app(
     async with lifespan(app):
         async with sessions() as session:
             session.add(
-                User(id=1, username="delete_owner", password_hash="test", name="회원")
+                User(
+                    id=user_uuid(1),
+                    username="delete_owner",
+                    password_hash="test",
+                    name="회원",
+                )
             )
             await session.commit()
-        token, _ = create_access_token(1)
+        token, _ = create_access_token(user_uuid(1))
         async with AsyncClient(
             transport=ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test",
@@ -181,12 +187,17 @@ def test_user_concurrency_across_rooms(
             first_room = (await env.client.post("/api/v1/chats")).json()["chat_id"]
             second_room = str(uuid4())
             async with env.sessions() as session:
-                session.add(Chat(chat_id=UUID(second_room), user_id=1))
+                session.add(Chat(chat_id=UUID(second_room), user_id=user_uuid(1)))
                 session.add(
-                    User(id=2, username="other", password_hash="test", name="회원")
+                    User(
+                        id=user_uuid(2),
+                        username="other",
+                        password_hash="test",
+                        name="회원",
+                    )
                 )
                 await session.commit()
-            token, _ = create_access_token(2)
+            token, _ = create_access_token(user_uuid(2))
             other_headers = {"Authorization": f"Bearer {token}"}
             other_room = (
                 await env.client.post("/api/v1/chats", headers=other_headers)
@@ -285,17 +296,17 @@ def test_global_concurrency_rejects_and_releases_capacity(
                     [
                         User(
                             id=user_id,
-                            username=f"global_owner_{user_id}",
+                            username=f"global_{user_id.hex[-8:]}",
                             password_hash="test",
                             name="회원",
                         )
-                        for user_id in (2, 3)
+                        for user_id in (user_uuid(2), user_uuid(3))
                     ]
                 )
                 await session.commit()
             headers: list[dict[str, str]] = []
             paths: list[str] = []
-            for user_id in (1, 2, 3):
+            for user_id in (user_uuid(1), user_uuid(2), user_uuid(3)):
                 token, _ = create_access_token(user_id)
                 authorization = {"Authorization": f"Bearer {token}"}
                 headers.append(authorization)
@@ -601,7 +612,7 @@ def test_concurrent_delete_only_one_succeeds(
             async def concurrent_delete(
                 repository: ChatRepository,
                 chat_id: UUID,
-                user_id: int,
+                user_id: UUID,
                 deleted_at: datetime,
             ) -> bool:
                 index = len(calls)

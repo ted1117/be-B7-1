@@ -25,6 +25,7 @@ from app.core.errors import (
 from app.core.logging import EventLogFormatter, LogEvent, configure_logging, log_event
 from app.core.request_context import request_id_context
 from app.schemas.error import ErrorCode
+from tests.user_ids import user_uuid
 
 
 class _Input(BaseModel):
@@ -344,7 +345,7 @@ def test_existing_admin_routes_keep_error_contract(
         async with sessions() as session:
             session.add(
                 User(
-                    id=1,
+                    id=user_uuid(1),
                     username="proc_user",
                     password_hash="test-only",
                     name="처리",
@@ -359,11 +360,11 @@ def test_existing_admin_routes_keep_error_contract(
 
     asyncio.run(initialize())
     monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
-    token, _ = create_access_token(1)
+    token, _ = create_access_token(user_uuid(1))
     client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
     try:
         listing = client.get("/api/v1/admin/users")
-        missing = client.get("/api/v1/admin/users/9999")
+        missing = client.get(f"/api/v1/admin/users/{user_uuid(9999)}")
     finally:
         client.close()
     assert listing.status_code == 200

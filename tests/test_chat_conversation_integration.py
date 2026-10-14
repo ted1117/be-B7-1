@@ -27,6 +27,7 @@ from app.main import app, lifespan
 from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
+from tests.user_ids import user_uuid
 
 
 @dataclass
@@ -131,18 +132,18 @@ async def _conversation_app(
     monkeypatch.setitem(app.dependency_overrides, get_db, test_db)
     async with lifespan(app):
         async with sessions() as session:
-            for user_id in (1, 2):
+            for user_id in (user_uuid(1), user_uuid(2)):
                 if await session.get(User, user_id) is None:
                     session.add(
                         User(
                             id=user_id,
-                            username=f"conversation_owner_{user_id}",
+                            username=f"conv_owner_{user_id.hex[-8:]}",
                             password_hash="test",
                             name="회원",
                         )
                     )
             await session.commit()
-        token, _ = create_access_token(1)
+        token, _ = create_access_token(user_uuid(1))
         async with AsyncClient(
             transport=ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test",
@@ -529,7 +530,7 @@ def test_user_gate_and_deletion_during_conversation_creation(
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             another = str(uuid4())
             async with env.sessions() as session:
-                session.add(Chat(chat_id=UUID(another), user_id=1))
+                session.add(Chat(chat_id=UUID(another), user_id=user_uuid(1)))
                 await session.commit()
             path = f"/api/v1/chats/{room}"
             task = asyncio.create_task(
@@ -544,7 +545,7 @@ def test_user_gate_and_deletion_during_conversation_creation(
                 untouched, rows = await _stored_chat(env.sessions, UUID(another))
                 assert untouched.conversation_id is None and rows == []
                 assert len(_payloads(env, "conversations")) == 1
-                token, _ = create_access_token(2)
+                token, _ = create_access_token(user_uuid(2))
                 headers = {"Authorization": f"Bearer {token}"}
                 other_room = (
                     await env.client.post("/api/v1/chats", headers=headers)
@@ -639,7 +640,9 @@ def test_conversation_lookup_is_fresh_and_id_save_preserves_deleted_room_records
                         )
                     )
                     await other_repository.save_conversation_id(room, "conv_external")
-                    assert await other_repository.soft_delete(room, 1, deleted_at)
+                    assert await other_repository.soft_delete(
+                        room, user_uuid(1), deleted_at
+                    )
                 assert stale.conversation_id is None
                 assert await repository.get_conversation_id(room) == "conv_external"
                 await repository.save_conversation_id(room, "conv_after_delete")

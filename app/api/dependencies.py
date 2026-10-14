@@ -64,12 +64,12 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-async def get_current_user_id(user: CurrentUser) -> int:
-    """인증된 회원의 ID를 기존 API에 제공한다."""
+async def get_current_user_id(user: CurrentUser) -> UUID:
+    """인증된 회원의 UUID를 반환한다."""
     return user.id
 
 
-CurrentUserId = Annotated[int, Depends(get_current_user_id)]
+CurrentUserId = Annotated[UUID, Depends(get_current_user_id)]
 
 
 def get_chat_request_limiter(request: Request) -> ChatRequestLimiter:

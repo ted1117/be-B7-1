@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 from app.core.database import Base
 from app.models import Chat, ChatLog
 from app.models.user import User
+from tests.user_ids import user_uuid
 
 
 @pytest.fixture
@@ -26,13 +27,13 @@ def model_engine(postgresql_engine: AsyncEngine) -> AsyncEngine:
             session.add_all(
                 [
                     User(
-                        id=1,
+                        id=user_uuid(1),
                         username="test_user",
                         password_hash="test-only",
                         name="회원",
                     ),
                     User(
-                        id=9_000_000_001,
+                        id=user_uuid(9000000001),
                         username="large_owner",
                         password_hash="test-only",
                         name="큰 ID 회원",
@@ -47,14 +48,14 @@ def model_engine(postgresql_engine: AsyncEngine) -> AsyncEngine:
 
 async def _create_chat(engine: AsyncEngine) -> UUID:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        chat = Chat(user_id=9_000_000_001)
+        chat = Chat(user_id=user_uuid(9000000001))
         session.add(chat)
         await session.commit()
         return chat.chat_id
 
 
-def test_chat_defaults_and_large_owner_id(model_engine: AsyncEngine) -> None:
-    """서버 생성 UUID4·UTC 시각과 큰 정수 소유자 ID가 재조회 후 유지된다.
+def test_chat_defaults_and_uuid_owner_id(model_engine: AsyncEngine) -> None:
+    """서버 생성 UUID4·UTC 시각과 UUID 소유자 ID가 재조회 후 유지된다.
 
     Args:
         model_engine: 테스트 전용 PostgreSQL 엔진.
@@ -68,7 +69,7 @@ def test_chat_defaults_and_large_owner_id(model_engine: AsyncEngine) -> None:
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
             chat = await session.get(Chat, first_id)
             assert chat is not None
-            assert chat.user_id == 9_000_000_001
+            assert chat.user_id == user_uuid(9000000001)
             assert chat.created_at.tzinfo is UTC
             assert chat.deleted_at is None
 
@@ -195,7 +196,9 @@ def test_utc_storage_and_round_trip(
     async def run() -> None:
         chat_id = uuid4()
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
-            session.add(Chat(chat_id=chat_id, user_id=1, created_at=created_at))
+            session.add(
+                Chat(chat_id=chat_id, user_id=user_uuid(1), created_at=created_at)
+            )
             await session.commit()
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
             chat = await session.get(Chat, chat_id)
@@ -394,7 +397,7 @@ def test_nonexistent_user_foreign_key_is_rejected(model_engine: AsyncEngine) -> 
 
     async def run() -> None:
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
-            session.add(Chat(user_id=9999))
+            session.add(Chat(user_id=user_uuid(9999)))
             with pytest.raises(IntegrityError, match="foreign key"):
                 await session.commit()
             await session.rollback()
@@ -415,12 +418,12 @@ def test_owner_update_requires_existing_user(model_engine: AsyncEngine) -> None:
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
             chat = await session.get(Chat, chat_id)
             assert chat is not None
-            chat.user_id = 9999
+            chat.user_id = user_uuid(9999)
             with pytest.raises(IntegrityError, match="foreign key"):
                 await session.commit()
             await session.rollback()
             await session.refresh(chat)
-            assert chat.user_id == 9_000_000_001
+            assert chat.user_id == user_uuid(9000000001)
 
     asyncio.run(run())
 
@@ -435,13 +438,13 @@ def test_referenced_user_delete_preserves_chat(model_engine: AsyncEngine) -> Non
     async def run() -> None:
         chat_id = await _create_chat(model_engine)
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
-            user = await session.get(User, 9_000_000_001)
+            user = await session.get(User, user_uuid(9000000001))
             assert user is not None
             await session.delete(user)
             with pytest.raises(IntegrityError, match="foreign key"):
                 await session.commit()
             await session.rollback()
-            assert await session.get(User, 9_000_000_001) is not None
+            assert await session.get(User, user_uuid(9000000001)) is not None
             assert await session.get(Chat, chat_id) is not None
 
     asyncio.run(run())
