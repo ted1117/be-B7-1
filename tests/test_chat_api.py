@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,6 +33,7 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas.error import ErrorCode
+from tests.user_ids import user_uuid
 
 
 @dataclass
@@ -41,7 +42,7 @@ class _ChatAPI:
     client: TestClient
     engine: AsyncEngine
     sessions: async_sessionmaker[AsyncSession]
-    user_id: int = 2**40 + 7
+    user_id: UUID = user_uuid(2**40 + 7)
 
     def authenticate(self) -> None:
         self.app.dependency_overrides[get_current_user_id] = lambda: self.user_id
@@ -88,19 +89,19 @@ def chat_api(
             session.add_all(
                 [
                     User(
-                        id=1,
+                        id=user_uuid(1),
                         username="mock_owner",
                         password_hash="test-only",
                         name="모의 로그인 회원",
                     ),
                     User(
-                        id=2**40 + 7,
+                        id=user_uuid(2**40 + 7),
                         username="chat_owner",
                         password_hash="test-only",
                         name="채팅 회원",
                     ),
                     User(
-                        id=2**40 + 8,
+                        id=user_uuid(2**40 + 8),
                         username="other_owner",
                         password_hash="test-only",
                         name="다른 회원",
@@ -108,12 +109,6 @@ def chat_api(
                 ]
             )
             await session.flush()
-            await session.execute(
-                text(
-                    "SELECT setval(pg_get_serial_sequence('users', 'id'), "
-                    "(SELECT max(id) FROM users))"
-                )
-            )
             await session.commit()
 
     asyncio.run(create_tables())
@@ -172,7 +167,7 @@ def test_login_rejects_spoofed_identity(
             "X-User-ID": str(chat_api.user_id),
         },
         params={"user_id": chat_api.user_id},
-        json={"user_id": chat_api.user_id},
+        json={"user_id": str(chat_api.user_id)},
     )
     _assert_error(response, 401, "UNAUTHORIZED")
     assert chat_api.stored_chats() == []
@@ -183,7 +178,7 @@ def test_create_persists_authenticated_owner(chat_api: _ChatAPI) -> None:
     """채팅방은 인증된 사용자에게 저장되고 공개 필드만 반환한다."""
     chat_api.authenticate()
     response = chat_api.client.post(
-        "/api/v1/chats", json={"user_id": chat_api.user_id + 1}
+        "/api/v1/chats", json={"user_id": str(user_uuid(2**40 + 8))}
     )
     assert response.status_code == 201
     body = response.json()
@@ -223,7 +218,7 @@ def test_list_filters_owner_and_orders_time_then_uuid(chat_api: _ChatAPI) -> Non
         ),
         Chat(
             chat_id=chat_ids[3],
-            user_id=chat_api.user_id + 1,
+            user_id=user_uuid(2**40 + 8),
             created_at=created_at + timedelta(seconds=2),
         ),
     )
@@ -369,7 +364,7 @@ def test_missing_and_unowned_chats_share_404(
         chat_api.seed(
             Chat(
                 chat_id=chat_id,
-                user_id=chat_api.user_id + 1,
+                user_id=user_uuid(2**40 + 8),
                 created_at=datetime(2026, 10, 5, tzinfo=UTC),
             )
         )
@@ -783,7 +778,7 @@ def test_unowned_question_does_not_save_or_call_ai(
     ai = _mock_ai(chat_api)
     chat_id = UUID("00000000-0000-4000-8000-000000000001")
     if other_owner:
-        chat_api.seed(Chat(chat_id=chat_id, user_id=chat_api.user_id + 1))
+        chat_api.seed(Chat(chat_id=chat_id, user_id=user_uuid(2**40 + 8)))
     response = chat_api.client.post(
         f"/api/v1/chats/{chat_id}/messages", json={"question": "질문"}
     )
@@ -974,7 +969,7 @@ def test_nonexistent_owner_returns_db_error(chat_api: _ChatAPI) -> None:
     Args:
         chat_api: 기존 User 모델과 외래키를 사용하는 테스트 API 환경.
     """
-    chat_api.app.dependency_overrides[get_current_user_id] = lambda: 9999
+    chat_api.app.dependency_overrides[get_current_user_id] = lambda: user_uuid(9999)
     response = chat_api.client.post("/api/v1/chats")
     _assert_error(response, 500, "DB_ERROR")
     assert chat_api.stored_chats() == []
@@ -995,7 +990,7 @@ def test_signup_user_can_create_chat_and_save_message(chat_api: _ChatAPI) -> Non
         },
     )
     assert signup.status_code == 201
-    chat_api.user_id = signup.json()["id"]
+    chat_api.user_id = UUID(signup.json()["id"])
     chat_api.authenticate()
     _mock_ai(chat_api)
     created = chat_api.client.post("/api/v1/chats")
@@ -1006,11 +1001,11 @@ def test_signup_user_can_create_chat_and_save_message(chat_api: _ChatAPI) -> Non
     )
     assert message.status_code == 201
     assert message.json()["status"] == "completed"
-    assert chat_api.stored_chats()[0].user_id == signup.json()["id"]
+    assert chat_api.stored_chats()[0].user_id == UUID(signup.json()["id"])
 
     async def check_user() -> None:
         async with chat_api.sessions() as session:
-            user = await session.get(User, signup.json()["id"])
+            user = await session.get(User, UUID(signup.json()["id"]))
             assert user is not None
             assert user.username == "signup_owner"
 

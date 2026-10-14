@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import jwt
 import pytest
@@ -16,6 +17,7 @@ from app.main import app
 from app.models.user import User
 from tests.test_auth_api import PAYLOAD
 from tests.test_auth_api import signup_db as _signup_db
+from tests.user_ids import user_uuid
 
 signup_db = _signup_db
 
@@ -96,7 +98,9 @@ def configure_auth(monkeypatch):
 def test_login_and_authenticated_chat(signup_db):
     client = TestClient(app)
     # 회원 ID 1을 가정하지 않는지 확인한다.
-    client.post("/api/v1/auth/signup", json={**PAYLOAD, "username": "another_user"})
+    other_user = client.post(
+        "/api/v1/auth/signup", json={**PAYLOAD, "username": "another_user"}
+    ).json()
     user = client.post("/api/v1/auth/signup", json=PAYLOAD).json()
     response = client.post(
         "/api/v1/auth/login",
@@ -119,9 +123,11 @@ def test_login_and_authenticated_chat(signup_db):
 
     async def check():
         async with signup_db() as session:
-            saved = await session.get(User, user["id"])
+            saved = await session.get(User, UUID(user["id"]))
             assert saved.last_login_at is not None
-            assert (await session.get(User, 1)).last_login_at is None
+            assert (
+                await session.get(User, UUID(other_user["id"]))
+            ).last_login_at is None
 
     asyncio.run(check())
 
@@ -160,7 +166,7 @@ def test_invalid_credentials(signup_db, username, password):
 )
 def test_authenticated_api_rejects_invalid_auth(signup_db, kind):
     claims = {
-        "sub": "1",
+        "sub": str(user_uuid(1)),
         "iat": datetime.now(UTC),
         "exp": datetime.now(UTC) + timedelta(minutes=30),
     }

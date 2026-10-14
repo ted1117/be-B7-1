@@ -6,6 +6,7 @@
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from app.core.errors import AppError
 from app.repositories.admin_repositories import (
@@ -32,7 +33,7 @@ class AdminService:
     async def list_users(self, page: int, size: int) -> tuple[list[dict], int]:
         return await self.users.list_users(page, size)
 
-    async def get_user(self, user_id: int) -> dict:
+    async def get_user(self, user_id: UUID) -> dict:
         user = await self.users.get_user(user_id)
         if user is None:
             raise AppError(
@@ -41,7 +42,7 @@ class AdminService:
         return user
 
     async def update_role(
-        self, user_id: int, role: str, caller_id: int | None = None
+        self, user_id: UUID, role: str, caller_id: UUID | None = None
     ) -> dict:
         if role not in ("admin", "user"):
             raise AppError(
@@ -64,7 +65,7 @@ class AdminService:
 
     async def list_logs(
         self,
-        user_id: int | None,
+        user_id: UUID | None,
         start: datetime | None,
         end: datetime | None,
         page: int,
@@ -73,7 +74,7 @@ class AdminService:
         return await self.chat_logs.list_logs(user_id, start, end, page, size)
 
     async def list_sessions(
-        self, user_id: int, page: int, size: int
+        self, user_id: UUID, page: int, size: int
     ) -> tuple[list[dict], int]:
         return await self.sessions.list_sessions(user_id, page, size)
 

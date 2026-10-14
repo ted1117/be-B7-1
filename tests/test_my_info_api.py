@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import jwt
 import pytest
@@ -82,7 +83,7 @@ def test_my_info_rejects_invalid_auth(signup_db, kind):
 
         async def delete_user():
             async with signup_db() as session:
-                await session.delete(await session.get(User, user["id"]))
+                await session.delete(await session.get(User, UUID(user["id"])))
                 await session.commit()
 
         asyncio.run(delete_user())
@@ -102,7 +103,7 @@ def test_my_info_supports_null_last_login_and_current_db_values(signup_db):
 
     async def update_user():
         async with signup_db() as session:
-            saved = await session.get(User, user["id"])
+            saved = await session.get(User, UUID(user["id"]))
             saved.name = "변경한 이름"
             saved.role = "admin"
             saved.last_login_at = None

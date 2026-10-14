@@ -27,6 +27,7 @@ from app.models.chat import Chat, ChatLog
 from app.models.user import User
 from app.schemas.chat import MessageResponse
 from app.schemas.error import ErrorCode
+from tests.user_ids import user_uuid
 
 
 def _sdk_response(status: str, answer: str) -> dict[str, object]:
@@ -165,7 +166,7 @@ def test_app_sdk_and_database_integration(
     monkeypatch.setattr("app.clients.openai.uniform", lambda low, high: 1.0)
     monkeypatch.setattr("app.main.settings", settings)
     monkeypatch.setitem(
-        app.dependency_overrides, get_current_user_id, lambda: 2**40 + 7
+        app.dependency_overrides, get_current_user_id, lambda: user_uuid(2**40 + 7)
     )
     logger = logging.getLogger("app.events")
     monkeypatch.setattr(logger, "handlers", [caplog.handler])
@@ -293,7 +294,7 @@ def test_app_sdk_and_database_integration(
             async with sessions() as session:
                 session.add(
                     User(
-                        id=2**40 + 7,
+                        id=user_uuid(2**40 + 7),
                         username="sdk_owner",
                         password_hash="test-only",
                         name="통합 회원",
@@ -373,7 +374,9 @@ def test_app_sdk_and_database_integration(
                     assert invalid.status_code == 422
                     assert invalid.json()["error"]["code"] == "INVALID_INPUT"
                     monkeypatch.setitem(
-                        app.dependency_overrides, get_current_user_id, lambda: 2**40 + 8
+                        app.dependency_overrides,
+                        get_current_user_id,
+                        lambda: user_uuid(2**40 + 8),
                     )
                     other_owner = await client.post(
                         path + "/messages", json={"question": "타인 채팅방 질문"}
@@ -403,7 +406,7 @@ def test_app_sdk_and_database_integration(
             async with reopened_sessions() as session:
                 chats = list((await session.scalars(select(Chat))).all())
                 messages = list((await session.scalars(select(ChatLog))).all())
-                assert len(chats) == 1 and chats[0].user_id == 2**40 + 7
+                assert len(chats) == 1 and chats[0].user_id == user_uuid(2**40 + 7)
                 assert chats[0].conversation_id == "conv_integration"
                 owner = await session.get(User, chats[0].user_id)
                 assert owner is not None and owner.username == "sdk_owner"

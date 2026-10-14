@@ -6,9 +6,9 @@
 """
 
 # 실제 구현은 admin_db.py에 있다.
-
 from abc import ABC, abstractmethod
 from datetime import datetime
+from uuid import UUID
 
 
 class UserRepository(ABC):
@@ -18,7 +18,12 @@ class UserRepository(ABC):
     async def list_users(self, page: int, size: int) -> tuple[list[dict], int]: ...
 
     @abstractmethod
-    async def update_role(self, user_id: int, role: str) -> dict | None: ...
+    async def get_user(self, user_id: UUID) -> dict | None:
+        """회원 ID로 공개 정보를 조회한다."""
+        ...
+
+    @abstractmethod
+    async def update_role(self, user_id: UUID, role: str) -> dict | None: ...
 
 
 class ChatLogRepository(ABC):
@@ -27,7 +32,7 @@ class ChatLogRepository(ABC):
     @abstractmethod
     async def list_logs(
         self,
-        user_id: int | None,
+        user_id: UUID | None,
         start: datetime | None,
         end: datetime | None,
         page: int,
@@ -40,7 +45,7 @@ class SessionRepository(ABC):
 
     @abstractmethod
     async def list_sessions(
-        self, user_id: int, page: int, size: int
+        self, user_id: UUID, page: int, size: int
     ) -> tuple[list[dict], int]: ...
 
     @abstractmethod

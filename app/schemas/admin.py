@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -14,13 +15,13 @@ class RoleUpdateRequest(BaseModel):
 
 
 class RoleUpdateResponse(BaseModel):
-    id: int
+    id: UUID
     username: str
     role: str
 
 
 class UserSummary(BaseModel):
-    id: int
+    id: UUID
     username: str
     name: str
     role: str
@@ -44,7 +45,7 @@ class ChatLogItem(BaseModel):
 
 class SessionItem(BaseModel):
     chat_id: str
-    user_id: int
+    user_id: UUID
     created_at: datetime
     message_count: int
 
@@ -63,4 +64,4 @@ class SystemLogItem(BaseModel):
     status_code: int | None = Field(
         default=None, validation_alias=AliasChoices("status_code", "http_status")
     )
-    user_id: int | None = None
+    user_id: UUID | int | None = None

@@ -14,7 +14,7 @@ class ChatRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, user_id: int) -> tuple[Chat, bool]:
+    async def create(self, user_id: UUID) -> tuple[Chat, bool]:
         """사용자의 빈 채팅방을 재사용하거나 새로 생성한다."""
         has_messages = exists().where(ChatLog.chat_id == Chat.chat_id)
         empty_chat_query = (
@@ -50,7 +50,7 @@ class ChatRepository:
             raise DatabaseSaveError(exc) from exc
         return chat, created
 
-    async def list_by_user(self, user_id: int) -> list[Chat]:
+    async def list_by_user(self, user_id: UUID) -> list[Chat]:
         """사용자의 채팅방 목록을 조회한다."""
         result = await self.session.scalars(
             select(Chat)
@@ -130,7 +130,7 @@ class ChatRepository:
             raise DatabaseSaveError(exc) from exc
         return message
 
-    async def get_by_id_and_user(self, chat_id: UUID, user_id: int) -> Chat | None:
+    async def get_by_id_and_user(self, chat_id: UUID, user_id: UUID) -> Chat | None:
         """ID와 사용자로 채팅방을 조회한다."""
         return await self.session.scalar(
             select(Chat).where(
@@ -141,7 +141,7 @@ class ChatRepository:
         )
 
     async def soft_delete(
-        self, chat_id: UUID, user_id: int, deleted_at: datetime
+        self, chat_id: UUID, user_id: UUID, deleted_at: datetime
     ) -> bool:
         """채팅방을 논리 삭제한다."""
         try:

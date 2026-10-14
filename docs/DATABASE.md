@@ -9,7 +9,7 @@ erDiagram
     users ||--o{ chats : owns
     chats ||--o{ chat_logs : contains
     users {
-        int id PK
+        uuid id PK
         string username UK
         string password_hash
         string name
@@ -19,7 +19,7 @@ erDiagram
     }
     chats {
         uuid chat_id PK
-        int user_id FK
+        uuid user_id FK
         datetime created_at
         datetime deleted_at
         string conversation_id
@@ -50,7 +50,7 @@ erDiagram
 | `chat_logs` | 질문·답변과 처리 결과. `request_id` 최초 질문 요청 ID, `model` 호출 모델, `created_at` 질문 저장 시각, `finished_at` 종료 시각. 상태별 null 조건은 아래 표 참고 |
 | `revoked_tokens` | 폐기한 토큰의 SHA-256 해시(64자)와 만료 시각(`expires_at`). 회원 외래키 없음 |
 
-회원 ID와 채팅방 소유자 ID는 64비트 정수(`BIGINT`), 채팅방·요청 ID는 UUID입니다. 시각은 시간대가 있는 PostgreSQL 컬럼에 저장하며 채팅 시각과 API 반환 시각은 UTC입니다. 빈 방 생성·재사용은 사용자 행 잠금과 같은 트랜잭션에서 처리하고 기본 `READ COMMITTED` 격리를 사용합니다. 조회 인덱스는 `chats(user_id, created_at, chat_id)`와 `chat_logs(chat_id, created_at, request_id)`입니다.
+회원 ID와 채팅방 소유자 ID는 UUID이며, 회원 ID는 저장 시 UUID4로 자동 생성합니다. 채팅방·요청 ID도 UUID입니다. API의 회원 ID는 하이픈을 포함한 UUID 문자열로 반환합니다. 시각은 시간대가 있는 PostgreSQL 컬럼에 저장하며 채팅 시각과 API 반환 시각은 UTC입니다. 빈 방 생성·재사용은 사용자 행 잠금과 같은 트랜잭션에서 처리하고 기본 `READ COMMITTED` 격리를 사용합니다. 조회 인덱스는 `chats(user_id, created_at, chat_id)`와 `chat_logs(chat_id, created_at, request_id)`입니다.
 
 ## 대화 로그 저장
 
@@ -121,6 +121,6 @@ docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT c.u
 docker compose exec -T postgres psql -U b7 -d b7 -c "BEGIN READ ONLY; SELECT token_hash, expires_at FROM revoked_tokens ORDER BY expires_at DESC, token_hash DESC LIMIT 50; COMMIT;"
 ```
 
-SQL은 전체 회원과 논리 삭제된 방도 조회합니다. 대화 기록에서 특정 회원만 보려면 `ORDER BY` 앞에 `WHERE c.user_id = 원하는 정수`를 추가합니다. UUID는 하이픈을 포함한 표준 형식으로 조회됩니다. 외부 증빙에는 점검용 계정의 기록만 사용합니다.
+SQL은 전체 회원과 논리 삭제된 방도 조회합니다. 대화 기록에서 특정 회원만 보려면 `ORDER BY` 앞에 `WHERE c.user_id = '회원-UUID'::uuid`를 추가합니다. UUID는 하이픈을 포함한 표준 형식으로 조회됩니다. 외부 증빙에는 점검용 계정의 기록만 사용합니다.
 
 `create_all`은 기존 테이블을 변경하지 않습니다. 모델 변경에는 별도 마이그레이션·백업이 필요합니다. [백업·보관 안내](OPERATIONS.md#데이터와-비밀값-관리) 참고.

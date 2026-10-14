@@ -63,11 +63,11 @@ class DbUserRepository(UserRepository):
         return [_user_dict(u) for u in rows.all()], total
 
     # 관리자 회원 상세: 회원 ID로 조회하고 비밀번호·해시를 제외한 정보를 반환한다.
-    async def get_user(self, user_id: int) -> dict | None:
+    async def get_user(self, user_id: UUID) -> dict | None:
         user = await self.session.scalar(select(User).where(User.id == user_id))
         return _user_dict(user) if user is not None else None
 
-    async def update_role(self, user_id: int, role: str) -> dict | None:
+    async def update_role(self, user_id: UUID, role: str) -> dict | None:
         user = await self.session.scalar(select(User).where(User.id == user_id))
         if user is None:
             return None
@@ -91,7 +91,7 @@ class DbChatLogRepository(ChatLogRepository):
 
     async def list_logs(
         self,
-        user_id: int | None,
+        user_id: UUID | None,
         start: datetime | None,
         end: datetime | None,
         page: int,
@@ -126,7 +126,7 @@ class DbSessionRepository(SessionRepository):
         self.session = session
 
     async def list_sessions(
-        self, user_id: int, page: int, size: int
+        self, user_id: UUID, page: int, size: int
     ) -> tuple[list[dict], int]:
         # 메시지 수는 상관 서브쿼리로 한 번에 조회한다.
         count_sq = (

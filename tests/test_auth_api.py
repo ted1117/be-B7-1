@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,13 +46,14 @@ def test_signup_persists_safe_user(signup_db):
     assert response.status_code == 201
     body = response.json()
     assert set(body) == {"id", "username", "name", "created_at"}
+    assert UUID(body["id"]).version == 4
     assert body["username"] == "test_user"
     assert body["name"] == "홍길동"
     assert body["created_at"].endswith("Z")
 
     async def check_saved():
         async with signup_db() as session:
-            user = await session.get(User, body["id"])
+            user = await session.get(User, UUID(body["id"]))
             assert user is not None
             assert user.role == "user"
             assert user.last_login_at is None

@@ -18,6 +18,7 @@ from app.core.errors import APIError, configure_request_processing, internal_err
 from app.models.chat import Chat
 from app.schemas.error import ErrorCode, ErrorResponse
 from app.services.chat_service import ChatService
+from tests.user_ids import user_uuid
 
 CHAT_ID = "00000000-0000-4000-8000-000000000001"
 CHAT_PATH = "/api/v1/chats/{chat_id}"
@@ -35,7 +36,7 @@ def docs_client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
     configure_request_processing(app)
-    app.dependency_overrides[get_current_user_id] = lambda: 1
+    app.dependency_overrides[get_current_user_id] = lambda: user_uuid(1)
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
@@ -104,9 +105,9 @@ def test_message_documents_user_concurrency(docs_client: TestClient) -> None:
     """사용자별 제한의 409 응답과 안내 문구를 문서화한다."""
     operation = docs_client.get("/openapi.json").json()["paths"][MESSAGE_PATH]["post"]
     assert "사용자당 질문 하나" in operation["description"]
-    example = operation["responses"]["409"]["content"]["application/json"][
-        "examples"
-    ]["CHAT_BUSY"]["value"]
+    example = operation["responses"]["409"]["content"]["application/json"]["examples"][
+        "CHAT_BUSY"
+    ]["value"]
     assert example["error"]["message"] == APIError("CHAT_BUSY").message
 
 
@@ -159,7 +160,7 @@ def test_examples_match_real_services_and_handlers(
     elif code == "INTERNAL_ERROR":
         saving.side_effect = RuntimeError("private test error")
     elif code.startswith("AI_"):
-        repository.get_by_id_and_user.return_value = Chat(user_id=1)
+        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
         ai.generate_answer.side_effect = APIError(cast(ErrorCode, code))
     elif code == "INVALID_INPUT":
         body = {"question": "   "}

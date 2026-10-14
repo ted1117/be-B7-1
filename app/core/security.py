@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import jwt
 from pwdlib import PasswordHash
@@ -27,7 +27,7 @@ async def verify_password(password: str, hashed: str | None) -> bool:
 
 
 # 로그인 API 구현: 회원 ID·발급 시각·만료 시각을 담은 HS256 JWT를 발급한다.
-def create_access_token(user_id: int) -> tuple[str, int]:
+def create_access_token(user_id: UUID) -> tuple[str, int]:
     settings = get_settings()
     now = datetime.now(UTC)
     expires_in = settings.access_token_expire_minutes * 60
@@ -54,14 +54,15 @@ def decode_access_token_claims(token: str) -> dict:
         options={"require": ["sub", "iat", "exp"]},
     )
     subject = claims["sub"]
-    if not isinstance(subject, str) or not subject.isascii() or not subject.isdigit():
+    if not isinstance(subject, str):
         raise jwt.InvalidTokenError("Invalid subject")
-    user_id = int(subject)
-    if user_id < 1 or user_id > 2**63 - 1:
-        raise jwt.InvalidTokenError("Invalid subject")
+    try:
+        UUID(subject)
+    except ValueError:
+        raise jwt.InvalidTokenError("Invalid subject") from None
     return claims
 
 
 # 회원 인증: 검증된 JWT에서 현재 회원 ID를 반환한다.
-def decode_access_token(token: str) -> int:
-    return int(decode_access_token_claims(token)["sub"])
+def decode_access_token(token: str) -> UUID:
+    return UUID(decode_access_token_claims(token)["sub"])

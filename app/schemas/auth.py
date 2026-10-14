@@ -1,4 +1,5 @@
 import re
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -20,10 +21,13 @@ class SignupRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, value: SecretStr) -> SecretStr:
-        if re.fullmatch(
-            r"(?=.*[a-zA-Z])(?=.*[0-9])(?=.*[!-/:-@\[-`{-~])[!-~]{8,128}",
-            value.get_secret_value(),
-        ) is None:
+        if (
+            re.fullmatch(
+                r"(?=.*[a-zA-Z])(?=.*[0-9])(?=.*[!-/:-@\[-`{-~])[!-~]{8,128}",
+                value.get_secret_value(),
+            )
+            is None
+        ):
             raise ValueError(
                 "비밀번호는 영문, 숫자, 특수문자를 각각 포함한 "
                 "8~128자여야 하며 공백은 사용할 수 없습니다."
@@ -45,7 +49,7 @@ class SignupRequest(BaseModel):
 class SignupResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: UUID
     username: str
     name: str
     created_at: UtcDateTime
@@ -76,7 +80,7 @@ class MyInfoResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: UUID
     username: str
     name: str
     role: str

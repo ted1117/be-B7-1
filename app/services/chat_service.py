@@ -21,9 +21,7 @@ from app.schemas.error import ResponseErrorCode
 
 
 class ChatService:
-    def __init__(
-        self, repository: ChatRepository, limiter: ChatRequestLimiter
-    ) -> None:
+    def __init__(self, repository: ChatRepository, limiter: ChatRequestLimiter) -> None:
         """요청 저장소와 앱 전체에서 공유하는 사용자 제한기를 연결한다."""
         self.repository = repository
         self.limiter = limiter
@@ -31,7 +29,7 @@ class ChatService:
     async def _save_failed_message(
         self,
         message: ChatLog,
-        user_id: int,
+        user_id: UUID,
         chat_id: UUID,
         error_code: ResponseErrorCode,
         started_at: float,
@@ -64,7 +62,7 @@ class ChatService:
             result="success",
         )
 
-    async def create_chat(self, user_id: int) -> tuple[ChatResponse, bool]:
+    async def create_chat(self, user_id: UUID) -> tuple[ChatResponse, bool]:
         """빈 채팅방을 반환하고 신규 생성 여부를 전달한다."""
         chat, created = await self.repository.create(user_id)
         if created:
@@ -76,14 +74,14 @@ class ChatService:
             )
         return ChatResponse.model_validate(chat), created
 
-    async def list_chats(self, user_id: int) -> ChatListResponse:
+    async def list_chats(self, user_id: UUID) -> ChatListResponse:
         """사용자의 채팅방 목록을 조회한다."""
         chats = await self.repository.list_by_user(user_id)
         return ChatListResponse(
             items=[ChatResponse.model_validate(chat) for chat in chats]
         )
 
-    async def get_chat(self, chat_id: UUID, user_id: int) -> ChatDetailResponse:
+    async def get_chat(self, chat_id: UUID, user_id: UUID) -> ChatDetailResponse:
         """사용자의 채팅방과 대화 기록을 조회한다."""
         chat = await self.repository.get_by_id_and_user(chat_id, user_id)
         if chat is None:
@@ -95,7 +93,7 @@ class ChatService:
             messages=[MessageResponse.model_validate(message) for message in messages],
         )
 
-    async def delete_chat(self, chat_id: UUID, user_id: int) -> None:
+    async def delete_chat(self, chat_id: UUID, user_id: UUID) -> None:
         """사용자의 채팅방을 논리 삭제한다."""
         deleted = await self.repository.soft_delete(chat_id, user_id, datetime.now(UTC))
         if not deleted:
@@ -110,7 +108,7 @@ class ChatService:
     async def send_message(
         self,
         chat_id: UUID,
-        user_id: int,
+        user_id: UUID,
         request_id: UUID,
         question: str,
         ai_client: AIClient,
@@ -129,7 +127,8 @@ class ChatService:
 
         Raises:
             APIError: 소유권 검사·사용자 점유 또는 AI 호출에 실패한 경우.
-            Exception: 예상하지 못한 AI 예외가 발생하고 실패 기록 저장 후 다시 전달되는 경우.
+            Exception: 예상하지 못한 AI 예외가 발생하고 실패 기록 저장 후
+                다시 전달되는 경우.
             SQLAlchemyError: 조회·질문·Conversation ID·처리 결과 저장에 실패한 경우.
         """
         chat = await self.repository.get_by_id_and_user(chat_id, user_id)
