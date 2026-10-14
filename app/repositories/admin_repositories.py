@@ -18,6 +18,11 @@ class UserRepository(ABC):
     async def list_users(self, page: int, size: int) -> tuple[list[dict], int]: ...
 
     @abstractmethod
+    async def get_user(self, user_id: UUID) -> dict | None:
+        """회원 ID로 공개 정보를 조회한다."""
+        ...
+
+    @abstractmethod
     async def update_role(self, user_id: UUID, role: str) -> dict | None: ...
 
 
