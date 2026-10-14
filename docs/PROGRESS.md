@@ -9,7 +9,7 @@ Last updated: 2026-10-14 19:42
 ## Current Status
 
 - Status: Ready for review
-- Current focus: UUID 전환 구현 및 전체 검증 완료 — 변경 사항 검토와 커밋 대기
+- Current focus: UUID 전환 커밋 완료 및 관리자 회원 저장소의 get_user 계약 누락 보완
 - Branch: refactor/user-uuid
 - Related issue/PR: 없음
 
@@ -29,6 +29,8 @@ Last updated: 2026-10-14 19:42
 - [x] 회원 기본키와 채팅방 소유자 외래키 UUID 전환 및 UUID4 자동 생성
 - [x] JWT 발급·검증·복원과 인증 dependency의 UUID 타입 적용
 - [x] 관리자 API·응답 스키마·서비스·Repository의 회원 ID 타입 전환
+- [x] 관리자 UserRepository에 get_user 추상 메서드 선언 추가 및 UUID 반환 계약 확인
+- [x] UUID 코드·테스트(f545ef9)와 문서(601a70a) 분리 커밋
 - [x] 사용자별 질문 제한기의 UUID 키 적용 및 기존 동시성·소유권 정책 유지
 - [x] UUID 시스템 로그 조회와 기존 정수 로그 호환성 검증
 - [x] 기존 테스트의 사용자 데이터 전환 및 UUID 생성·JWT·OpenAPI·관리자 보호 회귀 테스트 추가
@@ -38,11 +40,11 @@ Last updated: 2026-10-14 19:42
 
 ## In Progress
 
-- [ ] 구현 완료 — 변경 사항 검토 및 커밋 대기
+- [ ] 구현 완료 — 변경 사항 검토 및 배포 준비
 
 ## Next Steps
 
-1. 코드·테스트와 문서 변경을 검토하고 별도로 커밋한다.
+1. 커밋된 변경 사항을 검토하고 배포를 준비한다.
 2. 배포 대상의 기존 정수 ID DB를 초기화하고 새 코드로 테이블을 생성한다.
 3. 관리자를 새로 생성하고 재로그인·UUID API·프론트 ID 처리·실제 AI 대화를 확인한다.
 
@@ -92,6 +94,7 @@ git diff --check
 - Last passing: 회원 UUID4 생성·저장·재조회, DB UUID 컬럼·외래키, JWT UUID 복원 및 기존 정수 sub 거절 검증
 - Last passing: 관리자 UUID 입력·자기 강등 차단, UUID 로그 및 과거 정수 로그 조회, 소유권·동시성·롤백 검증
 - Last passing: 변경 Python 파일 Ruff 검사·포맷 및 git diff --check 통과
+- Last passing: get_user 추상 메서드·UUID 타입 선언 확인 및 Ruff 검사·포맷 통과
 - Failing: 없음
 - Not run: 실제 운영 DB 초기화·배포, 별도 프론트 저장소의 ID 처리 검증 및 외부 OpenAI 실제 호출
 
