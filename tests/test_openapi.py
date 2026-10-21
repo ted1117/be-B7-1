@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.api.dependencies import get_ai_clients, get_chat_service, get_current_user_id
 from app.api.error_responses import error_response
+from app.api.v1.endpoints.admin import router as admin_router
 from app.api.v1.endpoints.chat import router
 from app.core.chat_request_limiter import ChatRequestLimiter
 from app.core.errors import APIError, configure_request_processing, internal_error
@@ -24,6 +25,29 @@ CHAT_ID = "00000000-0000-4000-8000-000000000001"
 CHAT_PATH = "/api/v1/chats/{chat_id}"
 MESSAGE_PATH = CHAT_PATH + "/messages"
 MESSAGE_URL = f"/api/v1/chats/{CHAT_ID}/messages"
+
+
+def test_admin_documents_shared_bearer_auth() -> None:
+    """모든 관리자 API가 별도 헤더 입력 없이 공통 Bearer 인증을 사용한다."""
+    app = FastAPI()
+    app.include_router(admin_router, prefix="/api/v1")
+    schema = app.openapi()
+    assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    for route in admin_router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods:
+            operation = schema["paths"][f"/api/v1{route.path}"][method.lower()]
+            assert operation["security"] == [{"HTTPBearer": []}]
+            assert not any(
+                parameter["in"] == "header"
+                and parameter["name"].lower() == "authorization"
+                for parameter in operation.get("parameters", [])
+            )
+            assert ("requestBody" in operation) == (method == "PATCH")
 
 
 @pytest.fixture

@@ -12,6 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.api.dependencies import (
+    get_ai_clients,
+    get_chat_request_limiter,
+    require_admin,
+)
+from app.core.chat_request_limiter import ChatRequestLimiter
 from app.core.config import Settings, get_settings
 from app.main import app
 from app.models.user import User
@@ -85,9 +91,13 @@ def test_member_events_distinguish_outcomes(signup_db, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def configure_auth(monkeypatch):
-    from app.api.v1.admin_deps import require_admin
-
     monkeypatch.delitem(app.dependency_overrides, require_admin, raising=False)
+    # 인증 후 채팅 조회도 앱 시작 여부와 무관하게 실행할 수 있도록 자원을 주입한다.
+    limiter = ChatRequestLimiter(max_concurrent_requests=3)
+    monkeypatch.setitem(
+        app.dependency_overrides, get_chat_request_limiter, lambda: limiter
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_ai_clients, lambda: {})
     monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
     monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
     get_settings.cache_clear()
@@ -164,7 +174,8 @@ def test_invalid_credentials(signup_db, username, password):
         "wrong_algorithm",
     ],
 )
-def test_authenticated_api_rejects_invalid_auth(signup_db, kind):
+@pytest.mark.parametrize("path", ["/api/v1/chats", "/api/v1/admin/users"])
+def test_authenticated_api_rejects_invalid_auth(signup_db, kind, path):
     claims = {
         "sub": str(user_uuid(1)),
         "iat": datetime.now(UTC),
@@ -186,7 +197,7 @@ def test_authenticated_api_rejects_invalid_auth(signup_db, kind):
     if kind == "malformed":
         token = "not-a-token"
     headers = {} if kind == "missing" else {"Authorization": f"Bearer {token}"}
-    response = TestClient(app).get("/api/v1/chats", headers=headers)
+    response = TestClient(app).get(path, headers=headers)
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "UNAUTHORIZED"
     assert response.headers["www-authenticate"] == "Bearer"

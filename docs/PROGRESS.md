@@ -43,6 +43,11 @@ Last updated: 2026-10-22
 
 ## In Progress
 
+- [2026-10-22] 관리자 Swagger 회귀 테스트를 추가해 모든 관리자 API의 HTTPBearer 연결·별도 authorization 헤더 입력 제거·PATCH 요청 본문 유지를 검증했다. 잘못된 인증 8가지에 대한 기존 테스트를 관리자 API에도 적용했다. 관련 테스트 단독 실행에서 드러난 로그인 테스트의 공용 채팅 자원 미초기화는 테스트 의존성 주입으로 보완했다. 별도 임시 PostgreSQL에서 관리자·로그인·회원가입·내정보·UUID·OpenAPI 테스트 143개 통과(14.78초), 실패·제외·건너뛰기 없음. 변경 Python 파일 5개의 Ruff 검사·포맷 및 git diff --check 통과. 임시 DB 잔여 0개를 확인하고 서버를 종료했다. .env와 개발·운영 DB는 읽거나 변경하지 않았다.
+- [2026-10-22] dependencies.py를 공통·회원 인증·관리자·채팅 자원·채팅 서비스 순으로 정리하고 구역 주석을 추가했다. 별칭은 참조 순서를 유지하며 관련 함수 뒤에 모았고 실행 로직은 변경하지 않았다.
+- [2026-10-22] AdminServiceDep·CurrentAdmin 타입 별칭을 추가하고 관리자 API의 서비스 매개변수 7곳과 관리자 매개변수 1곳에 적용했다. 라우터 공통 관리자 권한 검사는 유지했다. 기존 OpenAPI 테스트 18개 통과 및 관리자 API 7개의 HTTPBearer 설정을 확인했다.
+- [2026-10-22] 관리자 의존성 require_admin·get_admin_service를 app/api/dependencies.py로 이동하고 관리자 라우터·테스트의 import를 변경했다. admin_deps.py를 삭제하고 require_admin의 docstring은 한 줄로 축약했다. 기존 OpenAPI 테스트 18개와 수정 Python 파일 4개의 구문 검사·git diff --check 통과. 관리자 OpenAPI 전체의 HTTPBearer 설정과 별도 authorization 입력 항목 제거를 확인했다. DB를 사용하는 관리자·로그인 테스트와 Ruff 검사는 수행하지 않았다.
+- [2026-10-22] 관리자 인증 통일 1단계: require_admin이 공통 CurrentUser를 받아 관리자 역할만 검사하도록 변경했다. 기존 반환값과 본인 강등 방지용 user_id는 유지했다. Python 구문 검사와 git diff --check 통과. 현재 환경에 Ruff 실행 파일이 없어 Ruff 검사는 수행하지 못했으며 인증·OpenAPI 테스트 보완은 후속 단계다.
 - [2026-10-22] 사용자 승인으로 로컬 개발 컨테이너 b7-postgres-dev의 b7 DB 앱 테이블 4개를 한 트랜잭션에서 초기화·재생성했다. 전체 행 0개와 chats.provider·model(NOT NULL 문자열), chats.state·chat_logs.response_id(nullable 문자열)를 확인했다. 기존 provider_state JSONB는 제거됐으며 관리자 재생성이 필요하다. 다른 DB와 .env는 변경하지 않았다.
 - [2026-10-22] 기존 테스트의 클라이언트 생성자·키워드 인자·AIResponse 반환·클라이언트 목록 주입·state 칼럼 참조를 새 계약에 맞췄다. 모델 필수 칼럼을 테스트 데이터에 반영하고, 이력 조회 실패 시 빈 이력으로 계속 호출하는 API 검증 및 상태 생성·답변 생성의 독립 타임아웃 검증을 보완했다. 독립 PostgreSQL에서 전체 562개 테스트 통과(43.12초), 실패·제외·건너뛰기 없음. 수정 테스트의 Ruff 검사·포맷 및 git diff --check 통과. 이번 단계에서 애플리케이션 코드는 추가 변경하지 않았으며 기존 DB 스키마 반영은 남아 있다.
 - [2026-10-22] 앱 시작 시 ai_clients 목록을 생성하고 의존성 주입으로 ChatService에 연결했다. 채팅방 생성 라우터는 서버의 OpenAI 모델 설정을 전달하고 메시지 전송의 별도 클라이언트 인자는 제거했다. 실제 API·독립 PostgreSQL·모의 SDK로 생성·재사용·성공·실패·삭제·자원 정리를 검증했으며 관련 대상 테스트 총 86개와 Ruff 검사 통과. 이전 계약을 사용하는 기존 테스트 수정과 기존 DB 스키마 반영은 남아 있다.
@@ -102,6 +107,7 @@ git diff --check
 
 ## Test Status
 
+- Last passing: [2026-10-22] 관리자 인증 통일 관련 6개 파일 테스트 143개 통과(14.78초). 관리자 Swagger·잘못된 인증·로그아웃·권한·본인 강등 방지 검증, 변경 Python 파일 5개 Ruff 검사·포맷 및 git diff --check 통과. 전체 테스트 스위트는 이번 작업에서 실행하지 않았다.
 - Last passing: [2026-10-22] 리팩토링 계약에 맞춘 전체 테스트 562개 통과(43.12초), 실패·제외·건너뛰기 없음. 수정 테스트의 Ruff 검사·포맷과 git diff --check 통과.
 - Last passing: 전체 테스트 498개 통과, 실패·제외·건너뛰기 없음
 - Last passing: 회원 UUID4 생성·저장·재조회, DB UUID 컬럼·외래키, JWT UUID 복원 및 기존 정수 sub 거절 검증

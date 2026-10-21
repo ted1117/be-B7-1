@@ -7,13 +7,12 @@
 core/errors.py 형식으로 통일한다. size 상한으로 한 번에 주는 양도 제한한다.
 """
 
-from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
+from app.api.dependencies import AdminServiceDep, CurrentAdmin, require_admin
 from app.api.error_responses import error_response
-from app.api.v1.admin_deps import get_admin_service, require_admin
 from app.core.datetimes import UtcDateTime
 from app.core.errors import APIError, AppError
 from app.core.pagination import Page, make_page
@@ -27,7 +26,6 @@ from app.schemas.admin import (
     UserDetail,
     UserSummary,
 )
-from app.services.admin_service import AdminService
 
 router = APIRouter(
     prefix="/admin",
@@ -44,7 +42,7 @@ router = APIRouter(
 
 @router.get("/users", response_model=Page[UserSummary], summary="회원 목록 조회")
 async def list_users(
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
 ):
@@ -55,7 +53,7 @@ async def list_users(
 @router.get("/users/{user_id}", response_model=UserDetail, summary="회원 상세 조회")
 async def get_user(
     user_id: UUID,
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
 ):
     return await service.get_user(user_id)
 
@@ -66,15 +64,15 @@ async def get_user(
 async def update_user_role(
     user_id: UUID,
     body: RoleUpdateRequest,
-    service: Annotated[AdminService, Depends(get_admin_service)],
-    admin: Annotated[dict, Depends(require_admin)],
+    service: AdminServiceDep,
+    admin: CurrentAdmin,
 ):
     return await service.update_role(user_id, body.role, admin.get("user_id"))
 
 
 @router.get("/logs", response_model=Page[ChatLogItem], summary="대화 기록 목록 조회")
 async def list_logs(
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
     user_id: UUID | None = None,
     start: UtcDateTime | None = None,
     end: UtcDateTime | None = None,
@@ -87,7 +85,7 @@ async def list_logs(
 
 @router.get("/sessions", response_model=Page[SessionItem], summary="세션 목록 조회")
 async def list_sessions(
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
     user_id: UUID,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
@@ -101,7 +99,7 @@ async def list_sessions(
 )
 async def get_session(
     chat_id: str,
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
 ):
     return await service.get_session(chat_id)
 
@@ -110,7 +108,7 @@ async def get_session(
     "/system-logs", response_model=Page[SystemLogItem], summary="시스템 로그 목록 조회"
 )
 async def list_system_logs(
-    service: Annotated[AdminService, Depends(get_admin_service)],
+    service: AdminServiceDep,
     level: str | None = None,
     event: str | None = None,
     start: UtcDateTime | None = None,
