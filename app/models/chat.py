@@ -36,7 +36,9 @@ class Chat(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         UTCDateTimeType(), nullable=True
     )
-    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ChatLog(Base):
@@ -68,6 +70,7 @@ class ChatLog(Base):
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     model: Mapped[str] = mapped_column(String, nullable=False)

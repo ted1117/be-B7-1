@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from app.clients.ai import AIResponse
 from app.core.chat_request_limiter import ChatRequestLimiter
 from app.core.errors import APIError
 from app.models.chat import Chat, ChatLog
@@ -13,22 +14,27 @@ from app.services.chat_service import ChatService
 from tests.user_ids import user_uuid
 
 
-@pytest.mark.parametrize("phase", ["history", "question", "answer", "failure"])
+@pytest.mark.parametrize("phase", ["state", "question", "answer", "failure"])
 def test_database_failure_releases_user(phase: str) -> None:
-    """문맥 조회·질문·답변·실패 저장 오류에서도 다음 질문을 승인한다."""
+    """상태 조회·질문·답변·실패 저장 오류에서도 다음 질문을 승인한다."""
 
     async def run() -> None:
         limiter = ChatRequestLimiter(max_concurrent_requests=1)
         repository = AsyncMock()
-        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
+        repository.get_by_id_and_user.return_value = Chat(
+            user_id=user_uuid(1), provider="test", model="test-model"
+        )
+        repository.get_state.return_value = "state"
         repository.list_recent_completed.return_value = []
-        service = ChatService(repository, limiter)
         ai = AsyncMock()
-        ai.model = "test-model"
-        ai.generate_answer.return_value = "답변"
+        ai.requires_history = True
+        ai.generate_answer.return_value = AIResponse("답변", "state", "response")
+        service = ChatService(repository, limiter, {"test": ai})
         failure = OperationalError("test", {}, RuntimeError())
-        if phase == "history":
-            repository.list_recent_completed.side_effect = failure
+        if phase == "state":
+            repository.get_state.side_effect = failure
+        elif phase == "answer":
+            repository.save_message_and_state.side_effect = failure
         else:
             repository.save_message.side_effect = (
                 [failure] if phase == "question" else [None, failure]
@@ -36,7 +42,7 @@ def test_database_failure_releases_user(phase: str) -> None:
         if phase == "failure":
             ai.generate_answer.side_effect = APIError("AI_UNAVAILABLE")
         with pytest.raises(OperationalError):
-            await service.send_message(uuid4(), user_uuid(1), uuid4(), "질문", ai)
+            await service.send_message(uuid4(), user_uuid(1), uuid4(), "질문")
         async with limiter.acquire(user_uuid(2)):
             pass
 
@@ -50,7 +56,10 @@ def test_user_remains_busy_until_answer_saved() -> None:
         saving = asyncio.Event()
         release = asyncio.Event()
         repository = AsyncMock()
-        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
+        repository.get_by_id_and_user.return_value = Chat(
+            user_id=user_uuid(1), provider="test", model="test-model"
+        )
+        repository.get_state.return_value = "state"
         repository.list_recent_completed.return_value = []
 
         async def save(message: ChatLog) -> None:
@@ -60,22 +69,27 @@ def test_user_remains_busy_until_answer_saved() -> None:
                 await release.wait()
 
         repository.save_message.side_effect = save
+
+        async def save_result(message: ChatLog, state: str | None) -> None:
+            await save(message)
+
+        repository.save_message_and_state.side_effect = save_result
         limiter = ChatRequestLimiter(max_concurrent_requests=1)
-        service = ChatService(repository, limiter)
         ai = AsyncMock()
-        ai.model = "test-model"
-        ai.generate_answer.return_value = "답변"
+        ai.requires_history = True
+        ai.generate_answer.return_value = AIResponse("답변", "state", "response")
+        service = ChatService(repository, limiter, {"test": ai})
         task = asyncio.create_task(
-            service.send_message(uuid4(), user_uuid(1), uuid4(), "질문", ai)
+            service.send_message(uuid4(), user_uuid(1), uuid4(), "질문")
         )
         try:
             await asyncio.wait_for(saving.wait(), 2)
             with pytest.raises(APIError) as error:
-                await service.send_message(uuid4(), user_uuid(1), uuid4(), "중복", ai)
+                await service.send_message(uuid4(), user_uuid(1), uuid4(), "중복")
             assert error.value.api_code == "CHAT_BUSY"
             with pytest.raises(APIError) as error:
                 await service.send_message(
-                    uuid4(), user_uuid(2), uuid4(), "다른 사용자 질문", ai
+                    uuid4(), user_uuid(2), uuid4(), "다른 사용자 질문"
                 )
             assert error.value.api_code == "SERVER_BUSY"
             assert repository.list_recent_completed.await_count == 1

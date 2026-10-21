@@ -18,6 +18,7 @@ LogEvent = Literal[
     "ai_call_started",
     "ai_call_succeeded",
     "ai_call_failed",
+    "chat_context_load_failed",
     "db_save_succeeded",
     "db_save_failed",
 ]

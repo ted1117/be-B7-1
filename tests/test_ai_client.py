@@ -11,24 +11,29 @@ from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 import app.main as main
-from app.api.dependencies import get_ai_client
-from app.clients.ai import DEFAULT_INSTRUCTIONS
+from app.api.dependencies import get_ai_clients
+from app.clients.ai import DEFAULT_INSTRUCTIONS, AIResponse
 from app.clients.openai import OpenAIClient
 from app.core.config import Settings
 from app.core.errors import APIError
 
 
-def _response(
-    status: str = "completed", answer: str = "AI 답변"
-) -> dict[str, object]:
+def _response(status: str = "completed", answer: str = "AI 답변") -> dict[str, object]:
     return {
-        "id": "resp_test", "object": "response", "created_at": 1,
-        "status": status, "model": "test-model",
-        "output": [{
-            "id": "msg_test", "type": "message", "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": answer, "annotations": []}],
-        }],
+        "id": "resp_test",
+        "object": "response",
+        "created_at": 1,
+        "status": status,
+        "model": "test-model",
+        "output": [
+            {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": answer, "annotations": []}],
+            }
+        ],
     }
 
 
@@ -74,10 +79,13 @@ def test_sdk_request_response_and_error_mapping(
             return httpx2.Response(
                 int(scenario), json={"error": {"message": "hidden API error"}}
             )
-        return httpx2.Response(200, json=_response(
-            status="incomplete" if scenario == "incomplete" else "completed",
-            answer="  " if scenario == "empty" else "AI 답변",
-        ))
+        return httpx2.Response(
+            200,
+            json=_response(
+                status="incomplete" if scenario == "incomplete" else "completed",
+                answer="  " if scenario == "empty" else "AI 답변",
+            ),
+        )
 
     transport = httpx2.MockTransport(respond)
     http_client = httpx2.AsyncClient(transport=transport)
@@ -85,8 +93,8 @@ def test_sdk_request_response_and_error_mapping(
     constructor = MagicMock(return_value=sdk)
     monkeypatch.setattr("app.clients.openai.AsyncOpenAI", constructor)
     timeout = 0.01 if scenario == "deadline" else 30
-    client = OpenAIClient("test-only", "test-model", timeout, max_retries=0)
-    history = [] if scenario == "without_history" else [("이전 질문", "답변")]
+    client = OpenAIClient("test-only", timeout, max_retries=0)
+    history = [] if scenario == "without_history" else None
     constructor.assert_called_once_with(
         api_key="test-only", timeout=timeout, max_retries=0
     )
@@ -94,11 +102,21 @@ def test_sdk_request_response_and_error_mapping(
     async def run() -> None:
         try:
             if expected_code is None:
-                answer = await client.generate_answer("현재 질문", history)
-                assert answer == "AI 답변"
+                answer = await client.generate_answer(
+                    model="test-model",
+                    state=None,
+                    question="현재 질문",
+                    history=history,
+                )
+                assert answer == AIResponse("AI 답변", None, "resp_test")
             else:
                 with pytest.raises(APIError) as caught:
-                    await client.generate_answer("현재 질문", history)
+                    await client.generate_answer(
+                        model="test-model",
+                        state=None,
+                        question="현재 질문",
+                        history=history,
+                    )
                 assert caught.value.code == expected_code
                 assert "hidden" not in str(caught.value)
         finally:
@@ -111,13 +129,7 @@ def test_sdk_request_response_and_error_mapping(
     assert payload["model"] == "test-model"
     assert payload["store"] is False
     assert payload["instructions"] == DEFAULT_INSTRUCTIONS
-    expected_input = [
-        {"role": "user", "content": "이전 질문"},
-        {"role": "assistant", "content": "답변"},
-        {"role": "user", "content": "현재 질문"},
-    ]
-    if scenario == "without_history":
-        expected_input = expected_input[-1:]
+    expected_input = [{"role": "user", "content": "현재 질문"}]
     assert payload["input"] == expected_input
 
 
@@ -230,11 +242,9 @@ def test_client_keeps_sdk_retries_disabled(
     sdk = MagicMock()
     constructor = MagicMock(return_value=sdk)
     monkeypatch.setattr("app.clients.openai.AsyncOpenAI", constructor)
-    client = OpenAIClient("test-only", "test-model", 30, max_retries)
+    client = OpenAIClient("test-only", 30, max_retries)
     assert client.max_retries == max_retries
-    constructor.assert_called_once_with(
-        api_key="test-only", timeout=30, max_retries=0
-    )
+    constructor.assert_called_once_with(api_key="test-only", timeout=30, max_retries=0)
 
 
 @pytest.mark.parametrize(
@@ -272,7 +282,8 @@ def test_lifespan_reuses_client_and_cleans_up(
         async with main.lifespan(app):
             first = Request({"type": "http", "app": app})
             second = Request({"type": "http", "app": app})
-            assert get_ai_client(first) is get_ai_client(second) is client
+            assert get_ai_clients(first) is get_ai_clients(second)
+            assert get_ai_clients(first) == {"openai": client}
             client.close.assert_not_awaited()
             if scenario == "body_error":
                 raise failure
@@ -283,7 +294,7 @@ def test_lifespan_reuses_client_and_cleans_up(
         with pytest.raises(RuntimeError) as caught:
             asyncio.run(run())
         assert caught.value is failure
-    constructor.assert_called_once_with("test-only", "test-model", 30, max_retries)
+    constructor.assert_called_once_with("test-only", 30, max_retries)
     engine.dispose.assert_awaited_once()
     if scenario == "create_error":
         client.close.assert_not_awaited()

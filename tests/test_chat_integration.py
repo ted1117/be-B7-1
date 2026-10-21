@@ -18,7 +18,7 @@ from sqlalchemy.pool import NullPool
 from app.api.dependencies import get_current_user_id
 from app.clients.ai import DEFAULT_INSTRUCTIONS
 from app.clients.openai import COMPACT_THRESHOLD
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.database import Base, get_db
 from app.core.errors import APIError
 from app.core.logging import EventLogFormatter
@@ -165,6 +165,7 @@ def test_app_sdk_and_database_integration(
     )
     monkeypatch.setattr("app.clients.openai.uniform", lambda low, high: 1.0)
     monkeypatch.setattr("app.main.settings", settings)
+    monkeypatch.setitem(app.dependency_overrides, get_settings, lambda: settings)
     monkeypatch.setitem(
         app.dependency_overrides, get_current_user_id, lambda: user_uuid(2**40 + 7)
     )
@@ -407,7 +408,7 @@ def test_app_sdk_and_database_integration(
                 chats = list((await session.scalars(select(Chat))).all())
                 messages = list((await session.scalars(select(ChatLog))).all())
                 assert len(chats) == 1 and chats[0].user_id == user_uuid(2**40 + 7)
-                assert chats[0].conversation_id == "conv_integration"
+                assert chats[0].state == "conv_integration"
                 owner = await session.get(User, chats[0].user_id)
                 assert owner is not None and owner.username == "sdk_owner"
                 assert len(messages) == len(expected_messages)

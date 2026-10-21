@@ -2,7 +2,6 @@ import asyncio
 import json
 from math import isfinite
 from random import uniform
-from typing import Any
 
 from openai import (
     APIConnectionError,
@@ -15,7 +14,7 @@ from openai import (
 )
 from openai.types.responses import Response, ResponseInputParam
 
-from app.clients.ai import DEFAULT_INSTRUCTIONS
+from app.clients.ai import DEFAULT_INSTRUCTIONS, AIResponse
 from app.core.errors import APIError
 
 COMPACT_THRESHOLD = 20_000
@@ -24,23 +23,21 @@ COMPACT_THRESHOLD = 20_000
 class OpenAIClient:
     """OpenAI SDK로 답변을 생성하고 호출 오류를 공통 오류로 변환한다."""
 
-    def __init__(
-        self, api_key: str, model: str, timeout: float, max_retries: int
-    ) -> None:
+    requires_history = False
+
+    def __init__(self, api_key: str, timeout: float, max_retries: int) -> None:
         """AI 클라이언트를 초기화한다.
 
         Args:
             api_key: 서버의 OpenAI API 키.
-            model: 답변을 생성할 모델 ID.
-            timeout: 전체 AI 호출의 제한 시간(초).
+            timeout: 각 상태 생성 또는 답변 생성의 제한 시간(초).
             max_retries: 직접 재시도에 사용할 최대 횟수. 최초 호출은 제외한다.
         """
-        self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=0)
 
-    async def create_conversation(self) -> str:
+    async def create_state(self) -> str:
         """OpenAI Conversation을 생성하고 ID를 반환한다.
 
         Returns:
@@ -74,33 +71,33 @@ class OpenAIClient:
 
     async def generate_answer(
         self,
+        *,
+        model: str,
+        state: str | None,
+        history: list[tuple[str, str]] | None,
         question: str,
-        history: list[tuple[str, str]],
-        **kwargs: Any,
-    ) -> str:
-        """Conversation 또는 대화 이력을 바탕으로 AI 답변을 생성한다.
+    ) -> AIResponse:
+        """상태를 Conversation ID로 사용해 답변과 응답 ID를 반환한다.
 
         Args:
+            model: 답변을 생성할 모델 ID.
+            state: Conversation ID. None이면 문맥 없이 호출한다.
+            history: 별도 이력을 사용하지 않으므로 None 또는 빈 목록.
             question: 현재 사용자의 질문.
-            history: 시간순으로 정렬한 이전 질문·답변 쌍.
-            **kwargs: conversation_id와 남은 제한 시간인 timeout_seconds.
 
         Returns:
-            완성된 텍스트 답변.
+            답변, 입력과 동일한 상태, 이번 응답의 식별자.
 
         Raises:
             APIError: 타임아웃, 서버 설정 오류 또는 유효한 답변 생성 실패.
         """
-        if kwargs.keys() - {"conversation_id", "timeout_seconds"}:
+        if not isinstance(model, str) or not model.strip():
             raise APIError("AI_CONFIGURATION_ERROR")
-        conversation_id = kwargs.get("conversation_id")
-        if conversation_id is not None and (
-            not isinstance(conversation_id, str) or not conversation_id.strip()
-        ):
+        if state is not None and (not isinstance(state, str) or not state.strip()):
             raise APIError("AI_CONFIGURATION_ERROR")
-        if conversation_id is not None and history:
+        if history:
             raise APIError("AI_CONFIGURATION_ERROR")
-        timeout = kwargs.get("timeout_seconds", self.timeout)
+        timeout = self.timeout
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
@@ -109,15 +106,12 @@ class OpenAIClient:
             raise APIError("AI_CONFIGURATION_ERROR")
         if timeout <= 0:
             raise APIError("AI_TIMEOUT")
-        messages: ResponseInputParam = []
-        for previous_question, answer in history:
-            messages.append({"role": "user", "content": previous_question})
-            messages.append({"role": "assistant", "content": answer})
-        messages.append({"role": "user", "content": question})
+        messages: ResponseInputParam = [{"role": "user", "content": question}]
         try:
             response = await self._request_with_retries(
                 messages,
-                conversation_id=conversation_id,
+                model=model,
+                conversation_id=state,
                 timeout=float(timeout),
             )
         except (APITimeoutError, TimeoutError) as exc:
@@ -132,12 +126,20 @@ class OpenAIClient:
             raise APIError("AI_UNAVAILABLE") from exc
         except json.JSONDecodeError as exc:
             raise APIError("AI_UNAVAILABLE") from exc
-        return self._extract_answer(response)
+        answer = self._extract_answer(response)
+        try:
+            response_id = response.id
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise APIError("AI_UNAVAILABLE") from exc
+        if not isinstance(response_id, str) or not response_id.strip():
+            raise APIError("AI_UNAVAILABLE")
+        return AIResponse(text=answer, state=state, response_id=response_id)
 
     async def _request_with_retries(
         self,
         messages: ResponseInputParam,
         *,
+        model: str,
         conversation_id: str | None = None,
         timeout: float | None = None,
     ) -> Response:
@@ -151,7 +153,7 @@ class OpenAIClient:
                     raise TimeoutError
                 try:
                     return await self._client.responses.create(
-                        model=self.model,
+                        model=model,
                         instructions=DEFAULT_INSTRUCTIONS,
                         input=messages,
                         conversation=conversation_id,

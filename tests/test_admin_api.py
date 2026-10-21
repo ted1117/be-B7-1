@@ -75,7 +75,15 @@ def admin_db(postgresql_engine, tmp_path):
                 )
             )
             await session.flush()
-            session.add(Chat(chat_id=chat_id, user_id=user_uuid(1), created_at=now))
+            session.add(
+                Chat(
+                    provider="openai",
+                    model="test-model",
+                    chat_id=chat_id,
+                    user_id=user_uuid(1),
+                    created_at=now,
+                )
+            )
             await session.flush()
             session.add(
                 ChatLog(
