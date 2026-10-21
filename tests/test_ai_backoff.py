@@ -7,7 +7,7 @@ import httpx2
 import pytest
 from openai import APIStatusError, AsyncOpenAI
 
-from app.clients.ai import DEFAULT_INSTRUCTIONS
+from app.clients.ai import DEFAULT_INSTRUCTIONS, AIResponse
 from app.clients.openai import OpenAIClient
 from app.core.errors import APIError
 
@@ -28,17 +28,31 @@ def test_direct_retries_recover_or_exhaust(
             if failure == "timeout":
                 raise httpx2.ReadTimeout("test timeout", request=request)
             return httpx2.Response(500, json={"error": {"message": "test error"}})
-        return httpx2.Response(200, json={
-            "id": "resp_test", "object": "response", "created_at": 1,
-            "status": "completed", "model": "test-model",
-            "output": [{
-                "id": "msg_test", "type": "message", "role": "assistant",
+        return httpx2.Response(
+            200,
+            json={
+                "id": "resp_test",
+                "object": "response",
+                "created_at": 1,
                 "status": "completed",
-                "content": [{
-                    "type": "output_text", "text": "답변", "annotations": [],
-                }],
-            }],
-        })
+                "model": "test-model",
+                "output": [
+                    {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "답변",
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
 
     connection = httpx2.AsyncClient(transport=httpx2.MockTransport(respond))
     sdk = AsyncOpenAI(api_key="test-only", max_retries=0, http_client=connection)
@@ -47,15 +61,19 @@ def test_direct_retries_recover_or_exhaust(
     monkeypatch.setattr("app.clients.openai.uniform", jitter)
     sleep = AsyncMock()
     monkeypatch.setattr("app.clients.openai.asyncio.sleep", sleep)
-    client = OpenAIClient("test-only", "test-model", 30, max_retries=4)
+    client = OpenAIClient("test-only", 30, max_retries=4)
 
     async def run() -> None:
         try:
             if failures < 5:
-                assert await client.generate_answer("질문", [("이전", "답변")]) == "답변"
+                assert await client.generate_answer(
+                    model="test-model", state=None, question="질문", history=None
+                ) == AIResponse("답변", None, "resp_test")
             else:
                 with pytest.raises(APIError) as caught:
-                    await client.generate_answer("질문", [("이전", "답변")])
+                    await client.generate_answer(
+                        model="test-model", state=None, question="질문", history=None
+                    )
                 expected = "AI_TIMEOUT" if failure == "timeout" else "AI_UNAVAILABLE"
                 assert caught.value.code == expected
         finally:
@@ -64,18 +82,14 @@ def test_direct_retries_recover_or_exhaust(
     asyncio.run(run())
     assert len(requests) == min(failures + 1, 5)
     assert [call.args[0] for call in sleep.await_args_list] == (
-        [0.75, 1.6, 3.6, 8.0][:min(failures, 4)]
+        [0.75, 1.6, 3.6, 8.0][: min(failures, 4)]
     )
     assert jitter.call_count == min(failures, 4)
     assert all(call.args == (0.75, 1.0) for call in jitter.call_args_list)
     payloads = [json.loads(request.content) for request in requests]
     assert all(payload == payloads[0] for payload in payloads)
     assert all(payload["instructions"] == DEFAULT_INSTRUCTIONS for payload in payloads)
-    assert payloads[0]["input"] == [
-        {"role": "user", "content": "이전"},
-        {"role": "assistant", "content": "답변"},
-        {"role": "user", "content": "질문"},
-    ]
+    assert payloads[0]["input"] == [{"role": "user", "content": "질문"}]
     assert connection.is_closed
 
 
@@ -109,17 +123,24 @@ def test_server_delay_and_backoff_cap(
         500, headers=headers, request=httpx2.Request("POST", "https://test/responses")
     )
     error = APIStatusError("test", response=response, body=None)
-    client = OpenAIClient("test-only", "test-model", 30, max_retries=4)
+    client = OpenAIClient("test-only", 30, max_retries=4)
     assert client._retry_delay(error, retry_index) == expected
 
 
 @pytest.mark.parametrize(
     ("status", "headers", "expected"),
     [
-        (408, {}, True), (409, {}, True), (429, {}, True),
-        (500, {}, True), (599, {}, True),
-        (400, {}, False), (401, {}, False), (403, {}, False),
-        (404, {}, False), (422, {}, False), (600, {}, False),
+        (408, {}, True),
+        (409, {}, True),
+        (429, {}, True),
+        (500, {}, True),
+        (599, {}, True),
+        (400, {}, False),
+        (401, {}, False),
+        (403, {}, False),
+        (404, {}, False),
+        (422, {}, False),
+        (600, {}, False),
         (500, {"x-should-retry": "false"}, False),
         (400, {"x-should-retry": "true"}, False),
     ],
@@ -135,10 +156,11 @@ def test_retry_classification(
     response = httpx2.Response(
         status, headers=headers, request=httpx2.Request("POST", "https://test")
     )
-    client = OpenAIClient("test-only", "test-model", 30, max_retries=4)
-    assert client._should_retry(
-        APIStatusError("test", response=response, body=None)
-    ) is expected
+    client = OpenAIClient("test-only", 30, max_retries=4)
+    assert (
+        client._should_retry(APIStatusError("test", response=response, body=None))
+        is expected
+    )
 
 
 @pytest.mark.parametrize("scenario", ["no_budget", "call", "wait", "cancel"])
@@ -152,7 +174,8 @@ def test_total_timeout_and_cancellation(
         if scenario == "call":
             await real_sleep(0.05)
         response = httpx2.Response(
-            500, headers={"Retry-After": "0.001"},
+            500,
+            headers={"Retry-After": "0.001"},
             request=httpx2.Request("POST", "https://test"),
         )
         raise APIStatusError("test", response=response, body=None)
@@ -167,17 +190,21 @@ def test_total_timeout_and_cancellation(
     monkeypatch.setattr("app.clients.openai.AsyncOpenAI", MagicMock(return_value=sdk))
     sleep = AsyncMock(side_effect=wait)
     monkeypatch.setattr("app.clients.openai.asyncio.sleep", sleep)
-    client = OpenAIClient("test-only", "test-model", 0.01, max_retries=4)
+    client = OpenAIClient("test-only", 0.01, max_retries=4)
     if scenario == "no_budget":
         monkeypatch.setattr(client, "_retry_delay", lambda error, index: 30.0)
 
     async def run() -> None:
         if scenario == "cancel":
             with pytest.raises(asyncio.CancelledError):
-                await client.generate_answer("질문", [])
+                await client.generate_answer(
+                    model="test-model", state=None, question="질문", history=None
+                )
         else:
             with pytest.raises(APIError) as caught:
-                await client.generate_answer("질문", [])
+                await client.generate_answer(
+                    model="test-model", state=None, question="질문", history=None
+                )
             assert caught.value.code == "AI_TIMEOUT"
 
     asyncio.run(run())

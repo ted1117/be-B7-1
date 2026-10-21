@@ -14,13 +14,35 @@ class ChatRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, user_id: UUID) -> tuple[Chat, bool]:
-        """사용자의 빈 채팅방을 재사용하거나 새로 생성한다."""
+    async def create(
+        self,
+        user_id: UUID,
+        *,
+        provider: str,
+        model: str,
+        state: str | None = None,
+    ) -> tuple[Chat, bool]:
+        """같은 제공자·모델의 빈 채팅방을 재사용하거나 새로 생성한다.
+
+        Args:
+            user_id: 채팅방 소유자의 ID.
+            provider: 사용할 AI 제공자.
+            model: 사용할 모델 ID.
+            state: 새 채팅방에 저장할 초기 상태. 재사용 시 기존 상태를 유지한다.
+
+        Returns:
+            채팅방과 신규 생성 여부.
+
+        Raises:
+            DatabaseSaveError: 생성 또는 재사용 트랜잭션에 실패한 경우.
+        """
         has_messages = exists().where(ChatLog.chat_id == Chat.chat_id)
         empty_chat_query = (
             select(Chat)
             .where(
                 Chat.user_id == user_id,
+                Chat.provider == provider,
+                Chat.model == model,
                 Chat.deleted_at.is_(None),
                 ~has_messages,
             )
@@ -30,8 +52,10 @@ class ChatRepository:
         stmt = (
             insert(Chat)
             .from_select(
-                ["user_id"],
-                select(literal(user_id)).where(~empty_chat_query.exists()),
+                ["user_id", "provider", "model", "state"],
+                select(
+                    literal(user_id), literal(provider), literal(model), literal(state)
+                ).where(~empty_chat_query.exists()),
             )
             .returning(Chat)
         )
@@ -59,34 +83,32 @@ class ChatRepository:
         )
         return list(result.all())
 
-    async def get_conversation_id(self, chat_id: UUID) -> str | None:
-        """채팅방에 저장된 현재 Conversation ID를 조회한다.
+    async def get_state(self, chat_id: UUID) -> str | None:
+        """채팅방에 저장된 현재 상태를 조회한다.
 
         Args:
             chat_id: 소유권 검사를 마친 채팅방의 ID.
 
         Returns:
-            저장된 Conversation ID 또는 연결되지 않은 경우 None.
+            저장된 상태 또는 상태가 없는 경우 None.
         """
         return await self.session.scalar(
-            select(Chat.conversation_id).where(Chat.chat_id == chat_id)
+            select(Chat.state).where(Chat.chat_id == chat_id)
         )
 
-    async def save_conversation_id(self, chat_id: UUID, conversation_id: str) -> None:
-        """채팅방의 Conversation ID를 저장한다.
+    async def save_state(self, chat_id: UUID, state: str | None) -> None:
+        """채팅방의 상태를 저장한다.
 
         Args:
             chat_id: 소유권 검사를 마친 채팅방의 ID.
-            conversation_id: OpenAI에서 생성한 Conversation ID.
+            state: 저장할 상태. None이면 기존 상태를 비운다.
 
         Raises:
-            DatabaseSaveError: ID 저장에 실패한 경우.
+            DatabaseSaveError: 상태 저장에 실패한 경우.
         """
         try:
             await self.session.execute(
-                update(Chat)
-                .where(Chat.chat_id == chat_id)
-                .values(conversation_id=conversation_id)
+                update(Chat).where(Chat.chat_id == chat_id).values(state=state)
             )
             await self.session.commit()
         except SQLAlchemyError as exc:
@@ -124,6 +146,32 @@ class ChatRepository:
         """
         try:
             self.session.add(message)
+            await self.session.commit()
+        except SQLAlchemyError as exc:
+            await self.session.rollback()
+            raise DatabaseSaveError(exc) from exc
+        return message
+
+    async def save_message_and_state(
+        self, message: ChatLog, state: str | None
+    ) -> ChatLog:
+        """대화 기록과 채팅방 상태를 하나의 트랜잭션으로 저장한다.
+
+        Args:
+            message: 답변·응답 ID·처리 상태가 반영된 대화 기록.
+            state: 다음 호출에 사용할 채팅방 상태. None도 그대로 저장한다.
+
+        Returns:
+            커밋을 마친 대화 기록.
+
+        Raises:
+            DatabaseSaveError: 저장에 실패해 대화 기록과 상태를 롤백한 경우.
+        """
+        try:
+            self.session.add(message)
+            await self.session.execute(
+                update(Chat).where(Chat.chat_id == message.chat_id).values(state=state)
+            )
             await self.session.commit()
         except SQLAlchemyError as exc:
             await self.session.rollback()

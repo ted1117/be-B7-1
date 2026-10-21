@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request, Response, status
 
-from app.api.dependencies import AIClientDep, ChatServiceDep, CurrentUserId, RequestId
+from app.api.dependencies import ChatServiceDep, CurrentUserId, RequestId, SettingsDep
 from app.api.error_responses import (
     AI_SERVICE_UNAVAILABLE_RESPONSE,
     AI_TIMEOUT_RESPONSE,
@@ -51,9 +51,12 @@ async def create_chat(
     response: Response,
     user_id: CurrentUserId,
     service: ChatServiceDep,
+    settings: SettingsDep,
 ) -> ChatResponse:
     """생성 여부에 따라 상태 코드를 설정하고 채팅방을 반환한다."""
-    chat, created = await service.create_chat(user_id)
+    chat, created = await service.create_chat(
+        user_id, provider="openai", model=settings.openai_model
+    )
     request.state.chat_id = chat.chat_id
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return chat
@@ -128,9 +131,8 @@ async def delete_chat(
     status_code=status.HTTP_201_CREATED,
     summary="질문 전송 및 AI 답변 받기",
     description=(
-        "질문을 전송하고 AI 답변을 생성하여 저장합니다. "
-        "OpenAI Conversation으로 같은 채팅방의 문맥을 유지하고 자동 압축합니다.\n\n"
-        "사용자당 질문 하나만 처리하며, 처리 중인 추가 질문은 409로 거절합니다. "
+        "질문을 전송하고 AI 답변을 생성하여 저장합니다.\n\n"
+        "사용자당 질문 하나만 처리하며, 처리 중인 추가 질문은 409로 거절합니다.\n\n"
         "전체 동시 질문 한도를 초과하면 대기 없이 503 SERVER_BUSY로 거절합니다."
     ),
     responses={
@@ -150,7 +152,6 @@ async def send_message(
     user_id: CurrentUserId,
     request_id: RequestId,
     service: ChatServiceDep,
-    ai_client: AIClientDep,
 ) -> MessageResponse:
     request.state.chat_id = chat_id
     return await service.send_message(
@@ -158,5 +159,4 @@ async def send_message(
         user_id,
         request_id,
         body.question,
-        ai_client,
     )

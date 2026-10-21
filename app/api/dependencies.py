@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Annotated
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.ai import AIClient
 from app.core.chat_request_limiter import ChatRequestLimiter
+from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
@@ -30,6 +32,7 @@ def get_request_id(request: Request) -> UUID:
 
 DBSession = Annotated[AsyncSession, Depends(get_db)]
 RequestId = Annotated[UUID, Depends(get_request_id)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 # 로그인 API 구현: Authorization 헤더에서 Bearer 토큰을 추출한다.
@@ -80,11 +83,20 @@ def get_chat_request_limiter(request: Request) -> ChatRequestLimiter:
 ChatRequestLimiterDep = Annotated[ChatRequestLimiter, Depends(get_chat_request_limiter)]
 
 
+def get_ai_clients(request: Request) -> Mapping[str, AIClient]:
+    """앱 시작 시 생성한 제공자별 공용 AI 클라이언트를 반환한다."""
+    return request.app.state.ai_clients
+
+
+AIClientsDep = Annotated[Mapping[str, AIClient], Depends(get_ai_clients)]
+
+
 def get_chat_service(
     request: Request,
     user_id: CurrentUserId,
     db: DBSession,
     limiter: ChatRequestLimiterDep,
+    clients: AIClientsDep,
 ) -> ChatService:
     """채팅 서비스를 생성하고 인증된 ID를 요청 로그에 연결한다.
 
@@ -93,20 +105,13 @@ def get_chat_service(
         user_id: 인증 의존성에서 제공한 사용자 ID.
         db: 요청의 비동기 DB 세션.
         limiter: 앱 전체에서 공유하는 채팅 요청 제한기.
+        clients: 제공자 이름으로 선택할 공용 AI 클라이언트 목록.
 
     Returns:
         채팅방과 대화 기록을 처리할 서비스.
     """
     request.state.user_id = user_id
-    return ChatService(ChatRepository(db), limiter)
+    return ChatService(ChatRepository(db), limiter, clients)
 
 
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
-
-
-def get_ai_client(request: Request) -> AIClient:
-    """앱 시작 시 생성한 공용 AI 클라이언트를 반환한다."""
-    return request.app.state.ai_client
-
-
-AIClientDep = Annotated[AIClient, Depends(get_ai_client)]

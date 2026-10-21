@@ -17,11 +17,10 @@ async def lifespan(app: FastAPI):
         await create_db_and_tables()
         client = OpenAIClient(
             settings.openai_api_key,
-            settings.openai_model,
             settings.ai_timeout_seconds,
             settings.ai_max_retries,
         )
-        app.state.ai_client = client
+        app.state.ai_clients = {"openai": client}
         app.state.chat_request_limiter = ChatRequestLimiter(
             max_concurrent_requests=settings.ai_max_concurrent_requests,
         )

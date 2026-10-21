@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -23,10 +23,11 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
 )
 
-from app.api.dependencies import get_ai_client, get_current_user_id
+from app.api.dependencies import get_ai_clients, get_current_user_id
 from app.api.v1.router import api_router, health_router
-from app.clients.ai import AIClient
+from app.clients.ai import AIClient, AIResponse
 from app.core.chat_request_limiter import ChatRequestLimiter
+from app.core.config import Settings, get_settings
 from app.core.database import Base, get_db
 from app.core.errors import APIError, DatabaseSaveError, configure_request_processing
 from app.models.chat import Chat, ChatLog
@@ -113,6 +114,9 @@ def chat_api(
 
     asyncio.run(create_tables())
     app = FastAPI()
+    app.state.ai_clients = {"openai": MagicMock()}
+    settings = Settings(_env_file=None, openai_model="test-model")
+    app.dependency_overrides[get_settings] = lambda: settings
     app.state.chat_request_limiter = ChatRequestLimiter(max_concurrent_requests=5)
     configure_request_processing(app)
     app.include_router(health_router)
@@ -209,14 +213,30 @@ def test_list_filters_owner_and_orders_time_then_uuid(chat_api: _ChatAPI) -> Non
         UUID(f"00000000-0000-4000-8000-{number:012x}") for number in range(1, 5)
     ]
     chat_api.seed(
-        Chat(chat_id=chat_ids[0], user_id=chat_api.user_id, created_at=created_at),
-        Chat(chat_id=chat_ids[1], user_id=chat_api.user_id, created_at=created_at),
         Chat(
+            provider="openai",
+            model="test-model",
+            chat_id=chat_ids[0],
+            user_id=chat_api.user_id,
+            created_at=created_at,
+        ),
+        Chat(
+            provider="openai",
+            model="test-model",
+            chat_id=chat_ids[1],
+            user_id=chat_api.user_id,
+            created_at=created_at,
+        ),
+        Chat(
+            provider="openai",
+            model="test-model",
             chat_id=chat_ids[2],
             user_id=chat_api.user_id,
             created_at=created_at + timedelta(seconds=1),
         ),
         Chat(
+            provider="openai",
+            model="test-model",
             chat_id=chat_ids[3],
             user_id=user_uuid(2**40 + 8),
             created_at=created_at + timedelta(seconds=2),
@@ -240,6 +260,8 @@ def test_detail_for_empty_chat_returns_empty_messages(chat_api: _ChatAPI) -> Non
     chat_id = UUID("00000000-0000-4000-8000-000000000001")
     chat_api.seed(
         Chat(
+            provider="openai",
+            model="test-model",
             chat_id=chat_id,
             user_id=chat_api.user_id,
             created_at=datetime(2026, 10, 5, 10, tzinfo=timezone(timedelta(hours=9))),
@@ -264,8 +286,20 @@ def test_detail_includes_all_statuses_in_order(chat_api: _ChatAPI) -> None:
         UUID(f"00000000-0000-4000-8000-{number:012x}") for number in range(1, 5)
     ]
     chat_api.seed(
-        Chat(chat_id=chat_id, user_id=chat_api.user_id, created_at=created_at),
-        Chat(chat_id=other_chat_id, user_id=chat_api.user_id, created_at=created_at),
+        Chat(
+            provider="openai",
+            model="test-model",
+            chat_id=chat_id,
+            user_id=chat_api.user_id,
+            created_at=created_at,
+        ),
+        Chat(
+            provider="openai",
+            model="test-model",
+            chat_id=other_chat_id,
+            user_id=chat_api.user_id,
+            created_at=created_at,
+        ),
     )
     chat_api.seed(
         ChatLog(
@@ -363,6 +397,8 @@ def test_missing_and_unowned_chats_share_404(
     if owned_by_other:
         chat_api.seed(
             Chat(
+                provider="openai",
+                model="test-model",
                 chat_id=chat_id,
                 user_id=user_uuid(2**40 + 8),
                 created_at=datetime(2026, 10, 5, tzinfo=UTC),
@@ -431,7 +467,7 @@ def test_sql_failure_returns_database_error(
     [
         ("GET", "list_messages"),
         ("POST", "get_by_id_and_user"),
-        ("POST", "list_recent_completed"),
+        ("POST", "get_state"),
     ],
 )
 def test_chat_read_failure_is_not_save_failure(
@@ -465,6 +501,45 @@ def test_chat_read_failure_is_not_save_failure(
     ai.generate_answer.assert_not_awaited()
 
 
+def test_history_read_failure_continues_and_keeps_question(
+    chat_api: _ChatAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """이력 조회의 SQL 실패 후 빈 이력으로 호출하고 질문과 답변을 저장한다."""
+    chat_api.authenticate()
+    ai = _mock_ai(chat_api)
+    chat_id = chat_api.client.post("/api/v1/chats").json()["chat_id"]
+    monkeypatch.setattr(logging.getLogger("app.events"), "handlers", [caplog.handler])
+    caplog.set_level(logging.INFO, logger="app.events")
+    caplog.clear()
+
+    async def fail_history(repository: ChatRepository, chat_id: UUID) -> None:
+        await repository.session.execute(text("SELECT * FROM missing_history_table"))
+
+    monkeypatch.setattr(ChatRepository, "list_recent_completed", fail_history)
+    response = chat_api.client.post(
+        f"/api/v1/chats/{chat_id}/messages", json={"question": "이력 없는 질문"}
+    )
+    assert response.status_code == 201
+    ai.generate_answer.assert_awaited_once_with(
+        model="test-model", state=None, history=[], question="이력 없는 질문"
+    )
+    saved = _messages(chat_api)
+    assert len(saved) == 1
+    assert saved[0].question == "이력 없는 질문" and saved[0].status == "completed"
+    failures = [
+        r for r in caplog.records if r.getMessage() == "chat_context_load_failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0].request_id == response.headers["X-Request-ID"]
+    assert failures[0].exception_type == "ProgrammingError"
+    assert not any(
+        r.getMessage() in {"api_error", "db_save_failed"} for r in caplog.records
+    )
+    assert "missing_history_table" not in caplog.text + response.text
+
+
 def test_create_failure_rolls_back_session(chat_api: _ChatAPI) -> None:
     """실제 저장 제약 오류 뒤 같은 세션으로 정상 채팅방을 저장한다."""
 
@@ -472,9 +547,11 @@ def test_create_failure_rolls_back_session(chat_api: _ChatAPI) -> None:
         async with chat_api.sessions() as session:
             repository = ChatRepository(session)
             with pytest.raises(DatabaseSaveError) as caught:
-                await repository.create(None)  # type: ignore[arg-type]
+                await repository.create(None, provider="openai", model="test-model")  # type: ignore[arg-type]
             assert isinstance(caught.value.original, IntegrityError)
-            chat, created = await repository.create(chat_api.user_id)
+            chat, created = await repository.create(
+                chat_api.user_id, provider="openai", model="test-model"
+            )
             assert created
             return chat.chat_id
 
@@ -547,9 +624,12 @@ asyncio.run(verify_startup())
 
 def _mock_ai(chat_api: _ChatAPI) -> MagicMock:
     ai = MagicMock(spec=AIClient)
-    ai.model = "test-model"
-    ai.generate_answer = AsyncMock(return_value="AI 답변")
-    chat_api.app.dependency_overrides[get_ai_client] = lambda: ai
+    ai.requires_history = True
+    ai.create_state = AsyncMock(return_value=None)
+    ai.generate_answer = AsyncMock(
+        return_value=AIResponse("AI 답변", None, "resp_mock")
+    )
+    chat_api.app.dependency_overrides[get_ai_clients] = lambda: {"openai": ai}
     return ai
 
 
@@ -647,7 +727,13 @@ def test_question_answer_is_committed_and_reused_as_context(
 
     monkeypatch.setattr(ChatRepository, "save_message", save)
 
-    async def answer(question: str, history: list[tuple[str, str]]) -> str:
+    async def answer(
+        *,
+        model: str,
+        state: str | None,
+        question: str,
+        history: list[tuple[str, str]] | None,
+    ) -> AIResponse:
         assert not sessions[-1].in_transaction()
         async with chat_api.sessions() as session:
             pending = list(
@@ -660,7 +746,7 @@ def test_question_answer_is_committed_and_reused_as_context(
             assert len(pending) == 1
             assert pending[0].question == question
             assert pending[0].answer is pending[0].finished_at is None
-        return "AI 답변"
+        return AIResponse("AI 답변", state, "resp_mock")
 
     ai.generate_answer.side_effect = answer
     first = chat_api.client.post(
@@ -679,7 +765,12 @@ def test_question_answer_is_committed_and_reused_as_context(
         f"/api/v1/chats/{chat_id}/messages", json={"question": "다음 질문"}
     )
     assert second.status_code == 201
-    ai.generate_answer.assert_awaited_with("다음 질문", [("첫 질문", "AI 답변")])
+    ai.generate_answer.assert_awaited_with(
+        model="test-model",
+        state=None,
+        question="다음 질문",
+        history=[("첫 질문", "AI 답변")],
+    )
     assert first.headers["X-Request-ID"] != second.headers["X-Request-ID"]
     assert len(_messages(chat_api)) == 2
 
@@ -710,7 +801,9 @@ def test_valid_question_length_saves_and_sends_trimmed_content(
     assert response.status_code == 201
     assert response.json()["question"] == expected
     assert response.json()["status"] == "completed"
-    ai.generate_answer.assert_awaited_once_with(expected, [])
+    ai.generate_answer.assert_awaited_once_with(
+        model="test-model", state=None, question=expected, history=[]
+    )
     messages = _messages(chat_api)
     assert len(messages) == 1
     assert messages[0].question == expected
@@ -778,7 +871,14 @@ def test_unowned_question_does_not_save_or_call_ai(
     ai = _mock_ai(chat_api)
     chat_id = UUID("00000000-0000-4000-8000-000000000001")
     if other_owner:
-        chat_api.seed(Chat(chat_id=chat_id, user_id=user_uuid(2**40 + 8)))
+        chat_api.seed(
+            Chat(
+                provider="openai",
+                model="test-model",
+                chat_id=chat_id,
+                user_id=user_uuid(2**40 + 8),
+            )
+        )
     response = chat_api.client.post(
         f"/api/v1/chats/{chat_id}/messages", json={"question": "질문"}
     )
@@ -855,7 +955,14 @@ def test_context_contains_only_last_five_completed_pairs(chat_api: _ChatAPI) -> 
     ai = _mock_ai(chat_api)
     chat_id = UUID(chat_api.client.post("/api/v1/chats").json()["chat_id"])
     other = UUID("00000000-0000-4000-8000-000000000099")
-    chat_api.seed(Chat(chat_id=other, user_id=chat_api.user_id))
+    chat_api.seed(
+        Chat(
+            provider="openai",
+            model="test-model",
+            chat_id=other,
+            user_id=chat_api.user_id,
+        )
+    )
     moment = datetime(2026, 10, 5, tzinfo=UTC)
     rows = [
         ChatLog(
@@ -908,7 +1015,10 @@ def test_context_contains_only_last_five_completed_pairs(chat_api: _ChatAPI) -> 
     )
     assert response.status_code == 201
     ai.generate_answer.assert_awaited_once_with(
-        "현재 질문", [(f"질문{n}", f"답변{n}") for n in range(3, 8)]
+        model="test-model",
+        state=None,
+        question="현재 질문",
+        history=[(f"질문{n}", f"답변{n}") for n in range(3, 8)],
     )
 
 

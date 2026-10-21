@@ -48,7 +48,9 @@ def model_engine(postgresql_engine: AsyncEngine) -> AsyncEngine:
 
 async def _create_chat(engine: AsyncEngine) -> UUID:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        chat = Chat(user_id=user_uuid(9000000001))
+        chat = Chat(
+            provider="openai", model="test-model", user_id=user_uuid(9000000001)
+        )
         session.add(chat)
         await session.commit()
         return chat.chat_id
@@ -197,7 +199,13 @@ def test_utc_storage_and_round_trip(
         chat_id = uuid4()
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
             session.add(
-                Chat(chat_id=chat_id, user_id=user_uuid(1), created_at=created_at)
+                Chat(
+                    provider="openai",
+                    model="test-model",
+                    chat_id=chat_id,
+                    user_id=user_uuid(1),
+                    created_at=created_at,
+                )
             )
             await session.commit()
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
@@ -397,7 +405,9 @@ def test_nonexistent_user_foreign_key_is_rejected(model_engine: AsyncEngine) -> 
 
     async def run() -> None:
         async with AsyncSession(model_engine, expire_on_commit=False) as session:
-            session.add(Chat(user_id=user_uuid(9999)))
+            session.add(
+                Chat(provider="openai", model="test-model", user_id=user_uuid(9999))
+            )
             with pytest.raises(IntegrityError, match="foreign key"):
                 await session.commit()
             await session.rollback()

@@ -15,8 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.api.dependencies import get_ai_client
-from app.core.config import Settings
+from app.api.dependencies import get_ai_clients
+from app.clients.ai import AIResponse
+from app.core.config import Settings, get_settings
 from app.core.database import Base, get_db
 from app.core.errors import APIError
 from app.core.security import create_access_token
@@ -55,6 +56,7 @@ async def _delete_app(
         jwt_secret_key="test-only-chat-delete-secret-123456789",
     )
     monkeypatch.setattr("app.main.settings", settings)
+    monkeypatch.setitem(app.dependency_overrides, get_settings, lambda: settings)
     monkeypatch.setattr("app.core.security.get_settings", lambda: settings)
     engine = create_async_engine(database_url, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -173,21 +175,37 @@ def test_user_concurrency_across_rooms(
         async def respond(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError("모의 AI 외 SDK 호출은 없어야 한다.")
 
-        async def answer(question: str, history: list[tuple[str, str]]) -> str:
+        async def answer(
+            *,
+            model: str,
+            state: str | None,
+            question: str,
+            history: list[tuple[str, str]] | None,
+        ) -> AIResponse:
             if question == "첫 질문":
                 started.set()
                 await release.wait()
-            return "답변"
+            return AIResponse("답변", state, "resp_mock")
 
         async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             ai = AsyncMock()
-            ai.model = "test-model"
+            ai.requires_history = True
+            ai.create_state = AsyncMock(return_value=None)
             ai.generate_answer.side_effect = answer
-            monkeypatch.setitem(app.dependency_overrides, get_ai_client, lambda: ai)
+            monkeypatch.setitem(
+                app.dependency_overrides, get_ai_clients, lambda: {"openai": ai}
+            )
             first_room = (await env.client.post("/api/v1/chats")).json()["chat_id"]
             second_room = str(uuid4())
             async with env.sessions() as session:
-                session.add(Chat(chat_id=UUID(second_room), user_id=user_uuid(1)))
+                session.add(
+                    Chat(
+                        provider="openai",
+                        model="test-model",
+                        chat_id=UUID(second_room),
+                        user_id=user_uuid(1),
+                    )
+                )
                 session.add(
                     User(
                         id=user_uuid(2),
@@ -246,7 +264,9 @@ def test_user_concurrency_across_rooms(
                 first_path, json={"question": "다음 질문"}
             )
             assert next_response.status_code == 201
-            assert ai.generate_answer.call_args.args[1] == [("첫 질문", "답변")]
+            assert ai.generate_answer.call_args.kwargs["history"] == [
+                ("첫 질문", "답변")
+            ]
             assert ai.generate_answer.await_count == 3
 
     asyncio.run(run())
@@ -269,7 +289,13 @@ def test_global_concurrency_rejects_and_releases_capacity(
         async def respond(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError("모의 AI 외 SDK 호출은 없어야 한다.")
 
-        async def answer(question: str, history: list[tuple[str, str]]) -> str:
+        async def answer(
+            *,
+            model: str,
+            state: str | None,
+            question: str,
+            history: list[tuple[str, str]] | None,
+        ) -> AIResponse:
             if question == "첫 질문":
                 first_started.set()
                 await release_first.wait()
@@ -282,15 +308,18 @@ def test_global_concurrency_rejects_and_releases_capacity(
             elif question == "두 번째 질문":
                 second_started.set()
                 await release_second.wait()
-            return "답변"
+            return AIResponse("답변", state, "resp_mock")
 
         async with _delete_app(
             postgresql_url, monkeypatch, respond, max_concurrent_requests=2
         ) as env:
             ai = AsyncMock()
-            ai.model = "test-model"
+            ai.requires_history = True
+            ai.create_state = AsyncMock(return_value=None)
             ai.generate_answer.side_effect = answer
-            monkeypatch.setitem(app.dependency_overrides, get_ai_client, lambda: ai)
+            monkeypatch.setitem(
+                app.dependency_overrides, get_ai_clients, lambda: {"openai": ai}
+            )
             async with env.sessions() as session:
                 session.add_all(
                     [
@@ -398,7 +427,13 @@ def test_user_slot_released_after_unsuccessful_request(
         async def respond(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError("모의 AI 외 SDK 호출은 없어야 한다.")
 
-        async def answer(question: str, history: list[tuple[str, str]]) -> str:
+        async def answer(
+            *,
+            model: str,
+            state: str | None,
+            question: str,
+            history: list[tuple[str, str]] | None,
+        ) -> AIResponse:
             if question == "첫 질문":
                 started.set()
                 await release.wait()
@@ -407,13 +442,16 @@ def test_user_slot_released_after_unsuccessful_request(
                 raise APIError(
                     "AI_TIMEOUT" if ending == "timeout" else "AI_UNAVAILABLE"
                 )
-            return "답변"
+            return AIResponse("답변", state, "resp_mock")
 
         async with _delete_app(postgresql_url, monkeypatch, respond) as env:
             ai = AsyncMock()
-            ai.model = "test-model"
+            ai.requires_history = True
+            ai.create_state = AsyncMock(return_value=None)
             ai.generate_answer.side_effect = answer
-            monkeypatch.setitem(app.dependency_overrides, get_ai_client, lambda: ai)
+            monkeypatch.setitem(
+                app.dependency_overrides, get_ai_clients, lambda: {"openai": ai}
+            )
             room = (await env.client.post("/api/v1/chats")).json()["chat_id"]
             path = f"/api/v1/chats/{room}/messages"
             task = asyncio.create_task(

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.clients.ai import DEFAULT_INSTRUCTIONS
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.database import Base, get_db
 from app.core.errors import DatabaseSaveError
 from app.core.security import create_access_token
@@ -76,6 +76,7 @@ async def _conversation_app(
         jwt_secret_key="test-only-chat-conversation-secret-123456789",
     )
     monkeypatch.setattr("app.main.settings", settings)
+    monkeypatch.setitem(app.dependency_overrides, get_settings, lambda: settings)
     monkeypatch.setattr("app.core.security.get_settings", lambda: settings)
     engine = create_async_engine(database_url, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -205,10 +206,10 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
             current, pending = await _stored_chat(env.sessions, room)
             assert len(pending) == 1 and pending[0].status == "pending"
             if request.url.path == "/v1/conversations":
-                assert current.conversation_id is None
+                assert current.state is None
             else:
                 payload = json.loads(request.content)
-                assert current.conversation_id == payload["conversation"]
+                assert current.state == payload["conversation"]
             return None
 
         async with _conversation_app(
@@ -220,14 +221,14 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
             room = UUID(created.json()["chat_id"])
             path = f"/api/v1/chats/{room}/messages"
             untouched, records = await _stored_chat(env.sessions, room)
-            assert untouched.conversation_id is None
+            assert untouched.state is None
             assert records == []
 
             # 호출 시점의 커밋 여부는 SDK 경계에서 별도 세션으로 확인한다.
             first = await env.client.post(path, json={"question": "첫 질문"})
             assert first.status_code == 201
             stored, records = await _stored_chat(env.sessions, room)
-            conversation_id = stored.conversation_id
+            conversation_id = stored.state
             assert conversation_id is not None
             assert records[0].status == "completed"
             assert len(env.sdk_requests) == 2
@@ -241,13 +242,13 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
             )
             assert other_response.status_code == 201
             other_chat, _ = await _stored_chat(env.sessions, UUID(other))
-            assert other_chat.conversation_id != conversation_id
+            assert other_chat.state != conversation_id
             assert len(_payloads(env, "conversations")) == 2
             payloads = _payloads(env, "responses")
             assert [payload["conversation"] for payload in payloads] == [
                 conversation_id,
                 conversation_id,
-                other_chat.conversation_id,
+                other_chat.state,
             ]
             for payload, question in zip(
                 payloads, ("첫 질문", "두 번째 질문", "다른 방 질문"), strict=True
@@ -269,7 +270,7 @@ def test_conversation_created_once_reused_across_restart_and_separate_rooms(
                 _payloads(restarted, "responses")[0]["conversation"] == conversation_id
             )
             stored, records = await _stored_chat(restarted.sessions, room)
-            assert stored.conversation_id == conversation_id
+            assert stored.state == conversation_id
             assert len(records) == 3
 
     asyncio.run(run())
@@ -311,7 +312,7 @@ def test_existing_room_records_are_preserved_without_uploading_history(
                 {"role": "user", "content": "새 문맥 질문"}
             ]
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id is not None
+            assert stored.state is not None
             old = next(record for record in records if record.request_id == old_id)
             assert (old.question, old.answer, old.status) == (
                 "이전 DB 질문",
@@ -353,7 +354,7 @@ def test_creation_failure_is_saved_and_next_request_can_create_conversation(
             code = "AI_TIMEOUT" if failure == "timeout" else "AI_UNAVAILABLE"
             _assert_error(first, code, 504 if failure == "timeout" else 502)
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id is None
+            assert stored.state is None
             assert len(records) == 1
             assert records[0].status == "failed"
             assert records[0].error_code == code
@@ -398,7 +399,7 @@ def test_answer_failure_keeps_saved_conversation_for_next_request(
             code = "AI_TIMEOUT" if failure == "timeout" else "AI_UNAVAILABLE"
             _assert_error(first, code, 504 if failure == "timeout" else 502)
             stored, records = await _stored_chat(env.sessions, room)
-            saved_id = stored.conversation_id
+            saved_id = stored.state
             assert saved_id is not None
             assert len(records) == 1 and records[0].status == "failed"
             assert records[0].error_code == code
@@ -410,7 +411,7 @@ def test_answer_failure_keeps_saved_conversation_for_next_request(
                 saved_id,
             ]
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id == saved_id
+            assert stored.state == saved_id
             assert sorted(record.status for record in records) == [
                 "completed",
                 "failed",
@@ -433,7 +434,7 @@ def test_conversation_database_error_stops_inference_and_keeps_db_classification
     monkeypatch.setattr(logger, "propagate", False)
     caplog.set_level(logging.INFO, logger="app.events")
     error = OperationalError("hidden statement", {}, RuntimeError("hidden database"))
-    method = "get_conversation_id" if phase == "lookup" else "save_conversation_id"
+    method = "get_state" if phase == "lookup" else "save_state"
     failure = error if phase == "lookup" else DatabaseSaveError(error)
     monkeypatch.setattr(ChatRepository, method, AsyncMock(side_effect=failure))
 
@@ -445,7 +446,7 @@ def test_conversation_database_error_stops_inference_and_keeps_db_classification
             )
             _assert_error(response, "DB_ERROR", 500)
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id is None
+            assert stored.state is None
             assert _payloads(env, "responses") == []
             assert len(_payloads(env, "conversations")) == (1 if phase == "save" else 0)
             assert len(records) == (1 if phase == "save" else 0)
@@ -467,10 +468,14 @@ def test_conversation_database_error_stops_inference_and_keeps_db_classification
     asyncio.run(run())
 
 
-def test_first_request_timeout_includes_conversation_creation(
-    postgresql_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("answer_delay", [0.15, 0.3])
+def test_state_and_answer_have_separate_timeouts(
+    postgresql_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer_delay: float,
 ) -> None:
-    """문맥 생성 시간을 포함한 전체 제한 시간과 실패 후 ID 재사용을 확인한다."""
+    """상태 생성과 답변의 독립 제한 시간 및 다음 요청의 상태 재사용을 확인한다."""
 
     async def run() -> None:
         cancelled = False
@@ -483,7 +488,7 @@ def test_first_request_timeout_includes_conversation_creation(
                 json.loads(request.content)["input"][-1]["content"] == "시간 제한 질문"
             ):
                 try:
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(answer_delay)
                 except asyncio.CancelledError:
                     cancelled = True
                     raise
@@ -495,12 +500,20 @@ def test_first_request_timeout_includes_conversation_creation(
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             path = f"/api/v1/chats/{room}/messages"
             first = await env.client.post(path, json={"question": "시간 제한 질문"})
-            _assert_error(first, "AI_TIMEOUT", 504)
-            assert cancelled
+            if answer_delay > 0.2:
+                _assert_error(first, "AI_TIMEOUT", 504)
+                assert cancelled
+            else:
+                assert first.status_code == 201
+                assert not cancelled
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id is not None
-            assert records[0].status == "failed"
-            assert records[0].error_code == "AI_TIMEOUT"
+            assert stored.state is not None
+            assert records[0].status == (
+                "failed" if answer_delay > 0.2 else "completed"
+            )
+            assert records[0].error_code == (
+                "AI_TIMEOUT" if answer_delay > 0.2 else None
+            )
             second = await env.client.post(path, json={"question": "빠른 질문"})
             assert second.status_code == 201
             assert len(_payloads(env, "conversations")) == 1
@@ -530,7 +543,14 @@ def test_user_gate_and_deletion_during_conversation_creation(
             room = UUID((await env.client.post("/api/v1/chats")).json()["chat_id"])
             another = str(uuid4())
             async with env.sessions() as session:
-                session.add(Chat(chat_id=UUID(another), user_id=user_uuid(1)))
+                session.add(
+                    Chat(
+                        provider="openai",
+                        model="test-model",
+                        chat_id=UUID(another),
+                        user_id=user_uuid(1),
+                    )
+                )
                 await session.commit()
             path = f"/api/v1/chats/{room}"
             task = asyncio.create_task(
@@ -543,7 +563,7 @@ def test_user_gate_and_deletion_during_conversation_creation(
                 )
                 _assert_error(duplicate, "CHAT_BUSY", 409)
                 untouched, rows = await _stored_chat(env.sessions, UUID(another))
-                assert untouched.conversation_id is None and rows == []
+                assert untouched.state is None and rows == []
                 assert len(_payloads(env, "conversations")) == 1
                 token, _ = create_access_token(user_uuid(2))
                 headers = {"Authorization": f"Bearer {token}"}
@@ -564,7 +584,7 @@ def test_user_gate_and_deletion_during_conversation_creation(
             assert first.status_code == 201
             stored, records = await _stored_chat(env.sessions, room)
             assert stored.deleted_at is not None
-            assert stored.conversation_id is not None
+            assert stored.state is not None
             assert len(records) == 1 and records[0].status == "completed"
             _assert_error(await env.client.get(path), "CHAT_NOT_FOUND", 404)
             next_response = await env.client.post(
@@ -595,18 +615,18 @@ def test_conversation_id_commit_failure_rolls_back_and_session_can_be_reused(
                 monkeypatch.setattr(session, "commit", AsyncMock(side_effect=error))
                 monkeypatch.setattr(session, "rollback", rollback)
                 with pytest.raises(DatabaseSaveError) as failure:
-                    await repository.save_conversation_id(room, "conv_rolled_back")
+                    await repository.save_state(room, "conv_rolled_back")
                 assert failure.value.original is error
                 rollback.assert_awaited_once()
                 assert not session.in_transaction()
                 stored, _ = await _stored_chat(env.sessions, room)
-                assert stored.conversation_id is None
+                assert stored.state is None
 
                 monkeypatch.setattr(session, "commit", commit)
-                await repository.save_conversation_id(room, "conv_recovered")
-                assert await repository.get_conversation_id(room) == "conv_recovered"
+                await repository.save_state(room, "conv_recovered")
+                assert await repository.get_state(room) == "conv_recovered"
                 stored, _ = await _stored_chat(env.sessions, room)
-                assert stored.conversation_id == "conv_recovered"
+                assert stored.state == "conv_recovered"
                 assert _payloads(env, "conversations") == []
 
     asyncio.run(run())
@@ -624,7 +644,7 @@ def test_conversation_lookup_is_fresh_and_id_save_preserves_deleted_room_records
             deleted_at = datetime.now(UTC)
             async with env.sessions() as session:
                 stale = await session.get(Chat, room)
-                assert stale is not None and stale.conversation_id is None
+                assert stale is not None and stale.state is None
                 repository = ChatRepository(session)
                 async with env.sessions() as other_session:
                     other_repository = ChatRepository(other_session)
@@ -639,16 +659,16 @@ def test_conversation_lookup_is_fresh_and_id_save_preserves_deleted_room_records
                             finished_at=datetime.now(UTC),
                         )
                     )
-                    await other_repository.save_conversation_id(room, "conv_external")
+                    await other_repository.save_state(room, "conv_external")
                     assert await other_repository.soft_delete(
                         room, user_uuid(1), deleted_at
                     )
-                assert stale.conversation_id is None
-                assert await repository.get_conversation_id(room) == "conv_external"
-                await repository.save_conversation_id(room, "conv_after_delete")
+                assert stale.state is None
+                assert await repository.get_state(room) == "conv_external"
+                await repository.save_state(room, "conv_after_delete")
 
             stored, records = await _stored_chat(env.sessions, room)
-            assert stored.conversation_id == "conv_after_delete"
+            assert stored.state == "conv_after_delete"
             assert stored.deleted_at == deleted_at
             assert len(records) == 1
             assert records[0].request_id == old_id

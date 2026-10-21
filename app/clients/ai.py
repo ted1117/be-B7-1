@@ -1,4 +1,5 @@
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Protocol
 
 DEFAULT_INSTRUCTIONS = (
     "You are “꽥꽥이” (QuackQuack), an AI conversation companion with a duck "
@@ -28,26 +29,58 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
-class AIClient(Protocol):
-    """AI 답변 생성과 자원 정리의 공통 계약을 정의한다."""
+@dataclass
+class AIResponse:
+    """AI 호출 결과를 전달한다.
 
-    model: str
+    Attributes:
+        text: AI가 생성한 답변.
+        state: 다음 호출에 사용할 문맥 유지 값. Chat.state에 저장한다.
+            유지 시 기존 값, 미사용 시 None이며 response_id와 같을 수 있다.
+        response_id: 이번 외부 응답의 식별자. ChatLog.response_id에 저장한다.
+            식별자가 없으면 None이다.
+    """
+
+    text: str
+    state: str | None
+    response_id: str | None = None
+
+
+class AIClient(Protocol):
+    """DB와 독립적인 상태 생성, 답변 생성과 자원 정리 계약을 정의한다."""
+
+    requires_history: bool
+
+    async def create_state(self) -> str | None:
+        """제공자 상태를 생성하고 별도 생성이 필요하지 않으면 None을 반환한다.
+
+        Returns:
+            DB에 저장할 초기 상태 또는 None.
+
+        Raises:
+            APIError: 타임아웃, 서버 설정 오류 또는 상태 생성 실패.
+        """
+        ...
 
     async def generate_answer(
         self,
+        *,
+        model: str,
+        state: str | None,
+        history: list[tuple[str, str]] | None,
         question: str,
-        history: list[tuple[str, str]],
-        **kwargs: Any,
-    ) -> str:
+    ) -> AIResponse:
         """대화 문맥과 현재 질문으로 완성된 답변을 생성한다.
 
         Args:
+            model: 답변을 생성할 모델 ID.
+            state: 이전 호출 후 저장한 문맥 유지 값. 의미는 클라이언트가 해석한다.
+            history: 현재 질문을 제외한 시간순의 과거 질문·답변 쌍.
+                이력이 필요하지 않은 클라이언트에는 None을 전달한다.
             question: 현재 사용자의 질문.
-            history: 시간순으로 정렬한 이전 질문·답변 쌍.
-            **kwargs: AI 구현체에서 사용하는 추가 요청 옵션.
 
         Returns:
-            완성된 텍스트 답변.
+            답변, 다음 호출에 사용할 최신 상태와 이번 외부 응답의 식별자.
 
         Raises:
             APIError: 타임아웃, 서버 설정 오류 또는 유효한 답변 생성 실패.

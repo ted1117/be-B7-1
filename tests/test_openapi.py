@@ -10,7 +10,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.dependencies import get_ai_client, get_chat_service, get_current_user_id
+from app.api.dependencies import get_ai_clients, get_chat_service, get_current_user_id
 from app.api.error_responses import error_response
 from app.api.v1.endpoints.chat import router
 from app.core.chat_request_limiter import ChatRequestLimiter
@@ -148,11 +148,14 @@ def test_examples_match_real_services_and_handlers(
     repository.get_by_id_and_user.return_value = None
     repository.soft_delete.return_value = False
     repository.list_recent_completed.return_value = []
-    service = ChatService(repository, ChatRequestLimiter(max_concurrent_requests=5))
-    docs_client.app.dependency_overrides[get_chat_service] = lambda: service
     ai = AsyncMock()
-    ai.model = "test-only"
-    docs_client.app.dependency_overrides[get_ai_client] = lambda: ai
+    ai.requires_history = False
+    repository.get_state.return_value = "existing"
+    service = ChatService(
+        repository, ChatRequestLimiter(max_concurrent_requests=5), {"openai": ai}
+    )
+    docs_client.app.dependency_overrides[get_chat_service] = lambda: service
+    docs_client.app.dependency_overrides[get_ai_clients] = lambda: {"openai": ai}
     body = {"question": "질문"}
     saving = repository.soft_delete if method == "delete" else repository.create
     if code == "DB_ERROR":
@@ -160,7 +163,9 @@ def test_examples_match_real_services_and_handlers(
     elif code == "INTERNAL_ERROR":
         saving.side_effect = RuntimeError("private test error")
     elif code.startswith("AI_"):
-        repository.get_by_id_and_user.return_value = Chat(user_id=user_uuid(1))
+        repository.get_by_id_and_user.return_value = Chat(
+            provider="openai", model="test-model", user_id=user_uuid(1)
+        )
         ai.generate_answer.side_effect = APIError(cast(ErrorCode, code))
     elif code == "INVALID_INPUT":
         body = {"question": "   "}

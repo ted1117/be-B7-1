@@ -7,7 +7,7 @@ import httpx2
 import pytest
 from openai import AsyncOpenAI
 
-from app.clients.ai import DEFAULT_INSTRUCTIONS
+from app.clients.ai import DEFAULT_INSTRUCTIONS, AIResponse
 from app.clients.openai import OpenAIClient
 from app.core.errors import APIError
 
@@ -47,7 +47,7 @@ def _client(
     connection = httpx2.AsyncClient(transport=httpx2.MockTransport(respond))
     sdk = AsyncOpenAI(api_key="test-only", max_retries=0, http_client=connection)
     monkeypatch.setattr("app.clients.openai.AsyncOpenAI", MagicMock(return_value=sdk))
-    return OpenAIClient("test-only", "test-model", timeout, max_retries), connection
+    return OpenAIClient("test-only", timeout, max_retries), connection
 
 
 @pytest.mark.parametrize(
@@ -93,7 +93,9 @@ def test_conversation_creation_and_error_mapping(
                 int(scenario), json={"error": {"message": "hidden failure"}}
             )
         payload: dict[str, object] = {
-            "id": "conv_test", "object": "conversation", "created_at": 1
+            "id": "conv_test",
+            "object": "conversation",
+            "created_at": 1,
         }
         if scenario == "missing_id":
             del payload["id"]
@@ -113,10 +115,10 @@ def test_conversation_creation_and_error_mapping(
     async def run() -> None:
         try:
             if expected_code is None:
-                assert await client.create_conversation() == "conv_test"
+                assert await client.create_state() == "conv_test"
             else:
                 with pytest.raises(APIError) as caught:
-                    await client.create_conversation()
+                    await client.create_state()
                 assert caught.value.code == expected_code
                 assert "hidden" not in str(caught.value)
         finally:
@@ -146,8 +148,11 @@ def test_same_conversation_receives_only_new_question_and_compaction(
         try:
             for question in ["첫 질문", "다음 질문"]:
                 assert await client.generate_answer(
-                    question, [], conversation_id="conv_test"
-                ) == "답변"
+                    model="test-model",
+                    state="conv_test",
+                    question=question,
+                    history=None,
+                ) == AIResponse("답변", "conv_test", "resp_test")
         finally:
             await client.close()
 
@@ -172,14 +177,14 @@ def test_same_conversation_receives_only_new_question_and_compaction(
 @pytest.mark.parametrize(
     ("history", "options", "expected_code"),
     [
-        ([], {"conversaton_id": "conv_test"}, "AI_CONFIGURATION_ERROR"),
-        ([], {"conversation_id": ""}, "AI_CONFIGURATION_ERROR"),
-        ([], {"conversation_id": " \t"}, "AI_CONFIGURATION_ERROR"),
-        ([], {"conversation_id": 123}, "AI_CONFIGURATION_ERROR"),
-        ([], {"conversation_id": True}, "AI_CONFIGURATION_ERROR"),
+        ([], {"stete": "conv_test"}, "TYPE_ERROR"),
+        ([], {"state": ""}, "AI_CONFIGURATION_ERROR"),
+        ([], {"state": " \t"}, "AI_CONFIGURATION_ERROR"),
+        ([], {"state": 123}, "AI_CONFIGURATION_ERROR"),
+        ([], {"state": True}, "AI_CONFIGURATION_ERROR"),
         (
             [("이전", "답변")],
-            {"conversation_id": "conv_test"},
+            {"state": "conv_test"},
             "AI_CONFIGURATION_ERROR",
         ),
         ([], {"timeout_seconds": True}, "AI_CONFIGURATION_ERROR"),
@@ -206,11 +211,24 @@ def test_invalid_request_options_fail_before_http(
 
     client, connection = _client(monkeypatch, respond)
 
+    request_options = options
+
     async def run() -> None:
         try:
-            with pytest.raises(APIError) as caught:
-                await client.generate_answer("질문", history, **options)
-            assert caught.value.code == expected_code
+            arguments = dict(
+                model="test-model", state=None, question="질문", history=history
+            )
+            options = dict(request_options)
+            if "timeout_seconds" in options:
+                client.timeout = options.pop("timeout_seconds")
+            arguments.update(options)
+            if expected_code == "TYPE_ERROR":
+                with pytest.raises(TypeError):
+                    await client.generate_answer(**arguments)
+            else:
+                with pytest.raises(APIError) as caught:
+                    await client.generate_answer(**arguments)
+                assert caught.value.code == expected_code
         finally:
             await client.close()
 
@@ -265,12 +283,15 @@ def test_conversation_retries_only_explicit_rate_limit(
         try:
             if expected_code is None:
                 assert await client.generate_answer(
-                    "질문", [], conversation_id="conv_test"
-                ) == "답변"
+                    model="test-model", state="conv_test", question="질문", history=None
+                ) == AIResponse("답변", "conv_test", "resp_test")
             else:
                 with pytest.raises(APIError) as caught:
                     await client.generate_answer(
-                        "질문", [], conversation_id="conv_test"
+                        model="test-model",
+                        state="conv_test",
+                        question="질문",
+                        history=None,
                     )
                 assert caught.value.code == expected_code
         finally:
@@ -285,10 +306,10 @@ def test_conversation_retries_only_explicit_rate_limit(
 
 
 @pytest.mark.parametrize("scenario", ["call", "retry_budget"])
-def test_remaining_timeout_limits_call_and_retry_wait(
+def test_client_timeout_limits_call_and_retry_wait(
     monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
-    """남은 제한 시간이 기본 제한보다 짧으면 호출·재시도 대기를 제한한다."""
+    """클라이언트의 제한 시간 안에 호출과 재시도 대기를 모두 수행한다."""
     requests: list[httpx2.Request] = []
 
     async def respond(request: httpx2.Request) -> httpx2.Response:
@@ -302,13 +323,13 @@ def test_remaining_timeout_limits_call_and_retry_wait(
             json={"error": {"message": "hidden error"}},
         )
 
-    client, connection = _client(monkeypatch, respond)
+    client, connection = _client(monkeypatch, respond, timeout=0.03)
 
     async def run() -> None:
         try:
             with pytest.raises(APIError) as caught:
                 await client.generate_answer(
-                    "질문", [], conversation_id="conv_test", timeout_seconds=0.03
+                    model="test-model", state="conv_test", question="질문", history=None
                 )
             assert caught.value.code == "AI_TIMEOUT"
         finally:
