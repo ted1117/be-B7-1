@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.api.v1.admin_deps import require_admin
+from app.api.dependencies import require_admin
 from app.core.database import Base, get_db
 from app.main import app
 from app.models.chat import Chat, ChatLog
