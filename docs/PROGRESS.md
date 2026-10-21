@@ -1,16 +1,16 @@
-# Progress: 회원 ID UUID 전환
+# Progress: AI 채팅 책임 분리
 
-Last updated: 2026-10-14 19:42
+Last updated: 2026-10-22
 
 ## Goal
 
-- 회원 ID와 연결된 DB·인증·API·로그·테스트를 정수에서 UUID로 전환한다.
+- 서비스가 제공자별 상태를 해석하지 않도록 AI 클라이언트와 저장소의 책임을 분리한다.
 
 ## Current Status
 
 - Status: Ready for review
-- Current focus: UUID 전환 커밋 완료 및 관리자 회원 저장소의 get_user 계약 누락 보완
-- Branch: refactor/user-uuid
+- Current focus: 리팩토링 코드 커밋 완료, 관리자 재생성과 실제 AI 호출 및 구조·DB 문서 정리 대기
+- Branch: refactor/ai-chat
 - Related issue/PR: 없음
 
 ## Decisions
@@ -25,6 +25,9 @@ Last updated: 2026-10-14 19:42
 
 ## Completed
 
+- [x] AI 채팅 모델·클라이언트 계약·저장소·서비스·API 연결 및 테스트 리팩토링 커밋(8bc5cc5)
+- [x] 독립 PostgreSQL에서 전체 테스트 562개, 수정 Python 파일 Ruff 검사·포맷 확인 통과
+- [x] 사용자 승인으로 로컬 개발 DB를 새 스키마로 초기화하고 빈 테이블·칼럼 확인
 - [x] 현재 main의 3e1b0b0에서 refactor/user-uuid 브랜치 생성
 - [x] 회원 기본키와 채팅방 소유자 외래키 UUID 전환 및 UUID4 자동 생성
 - [x] JWT 발급·검증·복원과 인증 dependency의 UUID 타입 적용
@@ -40,13 +43,22 @@ Last updated: 2026-10-14 19:42
 
 ## In Progress
 
-- [ ] 구현 완료 — 변경 사항 검토 및 배포 준비
+- [2026-10-22] 사용자 승인으로 로컬 개발 컨테이너 b7-postgres-dev의 b7 DB 앱 테이블 4개를 한 트랜잭션에서 초기화·재생성했다. 전체 행 0개와 chats.provider·model(NOT NULL 문자열), chats.state·chat_logs.response_id(nullable 문자열)를 확인했다. 기존 provider_state JSONB는 제거됐으며 관리자 재생성이 필요하다. 다른 DB와 .env는 변경하지 않았다.
+- [2026-10-22] 기존 테스트의 클라이언트 생성자·키워드 인자·AIResponse 반환·클라이언트 목록 주입·state 칼럼 참조를 새 계약에 맞췄다. 모델 필수 칼럼을 테스트 데이터에 반영하고, 이력 조회 실패 시 빈 이력으로 계속 호출하는 API 검증 및 상태 생성·답변 생성의 독립 타임아웃 검증을 보완했다. 독립 PostgreSQL에서 전체 562개 테스트 통과(43.12초), 실패·제외·건너뛰기 없음. 수정 테스트의 Ruff 검사·포맷 및 git diff --check 통과. 이번 단계에서 애플리케이션 코드는 추가 변경하지 않았으며 기존 DB 스키마 반영은 남아 있다.
+- [2026-10-22] 앱 시작 시 ai_clients 목록을 생성하고 의존성 주입으로 ChatService에 연결했다. 채팅방 생성 라우터는 서버의 OpenAI 모델 설정을 전달하고 메시지 전송의 별도 클라이언트 인자는 제거했다. 실제 API·독립 PostgreSQL·모의 SDK로 생성·재사용·성공·실패·삭제·자원 정리를 검증했으며 관련 대상 테스트 총 86개와 Ruff 검사 통과. 이전 계약을 사용하는 기존 테스트 수정과 기존 DB 스키마 반영은 남아 있다.
+- [2026-10-22] ChatService.send_message의 이력 조회·실패 복구를 _load_history로, 상태 생성·저장을 _prepare_state로 추출했다. 호출·저장 순서와 예외 처리 범위를 유지했으며 기존 서비스·요청 제한기 테스트 22개 및 Ruff 검사·포맷 확인 통과.
+- [2026-10-22] ChatService의 OpenAI 직접 참조·isinstance 분기를 제거하고 제공자별 클라이언트 목록을 주입받도록 했다. 채팅방에 제공자·모델을 저장하며 외부 상태는 첫 메시지에서 준비한다. 질문 선커밋, 이력 조회 실패 시 빈 이력 전달, 초기 상태 선저장, 답변·응답 ID·최신 상태의 원자적 저장을 연결했다. 서비스·요청 제한기·Repository·OpenAI 계약 대상 테스트 80개 및 Ruff 검사 통과. 앱 초기화·의존성 주입·라우터와 나머지 기존 테스트의 계약 연결은 후속 작업이다.
+- [2026-10-22] ChatRepository의 생성 인자에 provider·model·state를 추가하고 같은 제공자·모델의 빈 방을 재사용하도록 했다. Conversation ID 전용 메서드를 get_state·save_state로 바꾸고 대화 결과와 상태의 원자적 저장을 추가했다. 독립 PostgreSQL에서 대상 테스트 25개 및 Ruff 검사 통과. 서비스의 이전 Repository 호출은 후속 수정 대상이다.
+- [2026-10-22] OpenAIClient를 create_state·requires_history·명시적 model/state/history/question 인자와 AIResponse 반환 계약에 맞췄다. 모의 HTTP 테스트 33개 통과. 서비스·앱 초기화 및 기존 테스트의 이전 계약 참조는 후속 작업으로 남아 있다.
+- [2026-10-21] ChatLog 모델에 nullable 문자열 response_id를 추가했다. 기존 DB 스키마 반영과 응답 ID 저장 로직 연결은 아직 수행하지 않았다.
+- [2026-10-21] Chat 모델의 conversation_id를 제거하고 문자열 provider·model(NOT NULL), state(nullable)를 추가했다. 모델 변경만 진행했으며 기존 참조 수정과 DB 스키마 반영은 아직 수행하지 않았다.
+- [ ] 관리자 재생성·실제 AI 대화 확인 및 구조·DB 문서 정리
 
 ## Next Steps
 
-1. 커밋된 변경 사항을 검토하고 배포를 준비한다.
-2. 배포 대상의 기존 정수 ID DB를 초기화하고 새 코드로 테이블을 생성한다.
-3. 관리자를 새로 생성하고 재로그인·UUID API·프론트 ID 처리·실제 AI 대화를 확인한다.
+1. 로컬 개발 DB에 관리자를 재생성하고 로그인한다.
+2. FastAPI와 실제 OpenAI를 연결해 채팅방 생성·연속 질문·문맥 유지를 확인한다.
+3. 구조·DB 문서를 최종 코드에 맞추고 배포 대상 DB의 스키마 반영을 준비한다.
 
 ## Changed Files
 
@@ -90,6 +102,7 @@ git diff --check
 
 ## Test Status
 
+- Last passing: [2026-10-22] 리팩토링 계약에 맞춘 전체 테스트 562개 통과(43.12초), 실패·제외·건너뛰기 없음. 수정 테스트의 Ruff 검사·포맷과 git diff --check 통과.
 - Last passing: 전체 테스트 498개 통과, 실패·제외·건너뛰기 없음
 - Last passing: 회원 UUID4 생성·저장·재조회, DB UUID 컬럼·외래키, JWT UUID 복원 및 기존 정수 sub 거절 검증
 - Last passing: 관리자 UUID 입력·자기 강등 차단, UUID 로그 및 과거 정수 로그 조회, 소유권·동시성·롤백 검증
